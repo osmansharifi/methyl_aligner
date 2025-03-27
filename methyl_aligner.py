@@ -346,23 +346,3 @@ if __name__ == '__main__':
     output_dir = run_visualization(df, sample_name, ref_seq)
     
     print(f"\nAll outputs saved to: {output_dir}")
-
-'''
-def main():
-    # Parse all arguments first
-    args = parse_arguments()
-    
-    # Get sample name from FASTQ filename
-    sample_name = get_sample_name(args.fastq)
-    
-    # Run alignment pipeline
-    df, ref_seq = run_alignment(args)
-    
-    # Run visualization pipeline
-    output_dir = run_visualization(df, sample_name, ref_seq)
-    
-    print(f"\nAll outputs saved to: {output_dir}")
-
-if __name__ == '__main__':
-    main()
-'''
