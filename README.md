@@ -61,13 +61,7 @@ alignments.
 ## Example ##
 
 ```
-malign -md build reference.fa reads.fq
-```
-
-## Example maligner2 ##
-
-```
-python3 maligner2.py -m -p 70 new_reference.fa test_sample.fq
+python3 maligner.py -m -p 70 reference.fa test_sample.fq
 ```
 ## Output example ##
 ```
