@@ -28,11 +28,11 @@ enough to cover the amplion region.
 
 ## Usage ##
 
-The `malign` usage statement is reported if you don't give it the right
+The `methyl_aligner` usage statement is reported if you don't give it the right
 arguments.
 
 ```
-usage: malign [options] <fasta> <fastq>
+usage: python3 methyl_aligner.py [options] <fasta> <fastq>
 options:
   -p <int>  percent identity minimum [90]
   -t <int>  threads [4]
@@ -67,15 +67,15 @@ malign -md build reference.fa reads.fq
 ## Example maligner2 ##
 
 ```
-python3 maligner2.py -m -p 70 new_reference.fa sample_name.fastq
+python3 maligner2.py -m -p 70 new_reference.fa test_sample.fq
 ```
 ## Output example ##
 ```
 results/
-└── sample_name/
-    ├── sample_name_matrix.csv
-    ├── sample_name_matrix_ref_c.csv
-    ├── sample_name_line_plot_all_data.pdf
-    ├── sample_name_line_plot_cpg_only.pdf
-    └── sample_name_reference.txt
+└── test_sample/
+    ├── test_sample_matrix.csv
+    ├── test_sample_matrix_ref_c.csv
+    ├── test_sample_line_plot_all_data.pdf
+    ├── test_sample_line_plot_cpg_only.pdf
+    └── test_sample_reference.txt
 ```
