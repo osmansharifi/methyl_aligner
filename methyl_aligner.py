@@ -25,8 +25,8 @@ def parse_arguments():
     parser.add_argument('fastq', help='Query FASTQ file')
     
     # Alignment options
-    parser.add_argument('-p', '--percent', type=int, default=90,
-                       help='Percent identity minimum (default: 90)')
+    parser.add_argument('-p', '--percent', type=int, default=70,
+                       help='Percent identity minimum (default: 70)')
     parser.add_argument('-t', '--threads', type=int, default=4,
                        help='Number of threads (default: 4)')
     parser.add_argument('-w', '--wrap', type=int, default=50,
