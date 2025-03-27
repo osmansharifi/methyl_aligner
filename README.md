@@ -16,7 +16,7 @@ conda config --add channels defaults
 conda config --add channels bioconda
 conda config --add channels conda-forge
 conda config --set channel_priority strict
-conda create --name emboss emboss
+conda create --name methyl_aligner_env emboss
 conda activate emboss
 conda install pandas
 conda install seaborn
