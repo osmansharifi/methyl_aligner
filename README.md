@@ -34,7 +34,7 @@ arguments.
 ```
 usage: python3 methyl_aligner.py [options] <fasta> <fastq>
 options:
-  -p <int>  percent identity minimum [90]
+  -p <int>  percent identity minimum [70]
   -t <int>  threads [4]
   -w <int>  wrap [50]
   -d <path> create and keep a named working directory for temp files
