@@ -34,6 +34,7 @@ arguments.
 ```
 usage: python3 methyl_aligner.py [options] <fasta> <fastq>
 options:
+  -h        show this help message and exit
   -p <int>  percent identity minimum [70]
   -t <int>  threads [4]
   -w <int>  wrap [50]
