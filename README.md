@@ -74,3 +74,10 @@ results/
     ├── test_sample_line_plot_cpg_only.pdf
     └── test_sample_reference.txt
 ```
+## Example Visualizations
+
+### All Data
+![Nucleotide Counts - All Data](test_sample_line_plot_all_data.pdf)
+
+### CpG Sites Only
+![Nucleotide Counts - CpG Only](test_sample_line_plot_cpg_only.pdf)
