@@ -77,7 +77,7 @@ results/
 ## Example Visualizations
 
 ### All Data
-![Nucleotide Counts - All Data](test_sample_line_plot_all_data.pdf)
+![Nucleotide Counts - All Data](test_sample_line_plot_all_data.png)
 
 ### CpG Sites Only
-![Nucleotide Counts - CpG Only](test_sample_line_plot_cpg_only.pdf)
+![Nucleotide Counts - CpG Only](test_sample_line_plot_cpg_only.png)
