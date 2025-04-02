@@ -64,7 +64,7 @@ alignments.
 ```
 python3 methyl_aligner.py -m -p 70 reference.fa test_sample.fq
 ```
-## Output example ##
+## Example Output ##
 ```
 results/
 └── test_sample/
