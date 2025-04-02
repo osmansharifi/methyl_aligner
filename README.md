@@ -62,7 +62,7 @@ alignments.
 ## Example ##
 
 ```
-python3 maligner.py -m -p 70 reference.fa test_sample.fq
+python3 methyl_aligner.py -m -p 70 reference.fa test_sample.fq
 ```
 ## Output example ##
 ```
