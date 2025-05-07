@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+ce#!/usr/bin/env python3
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -65,7 +65,7 @@ def add_cpg_methylation_plot(input_csv, output_pdf):
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
-        print("Usage: python3 methyl_aligner.py <input_csv> <output_pdf>")
+        print("usage: python3 percent_mC.py <input_csv> <output_pdf>")
         sys.exit(1)
     
     input_csv = sys.argv[1]
