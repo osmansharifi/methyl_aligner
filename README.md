@@ -44,6 +44,12 @@ options:
               computes percent identity from A/G only
   -f        force rewrite over named working directory
 ```
+The `percent_mC.py` usage statement is reported if you don't give it the right
+arguments.
+
+```
+usage: python3 percent_mC.py <input_csv> <output_pdf>
+```
 
 Notes:
 
