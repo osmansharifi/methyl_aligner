@@ -1,10 +1,11 @@
-ce#!/usr/bin/env python3
+#!/usr/bin/env python3
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import sys
 from scipy.ndimage import gaussian_filter1d
 from matplotlib.backends.backend_pdf import PdfPages
+from scipy.stats import binomtest
 
 def add_cpg_methylation_plot(input_csv, output_pdf):
     try:
@@ -16,6 +17,28 @@ def add_cpg_methylation_plot(input_csv, output_pdf):
         df['percent_C'] = df['C'] / total_coverage * 100  # Unmethylated
         df['percent_T'] = df['T'] / total_coverage * 100  # Methylated
         
+        # Analyze A, G content using bionomial test
+        positions = [397, 492]
+        zygosity_results = []
+
+        for pos in positions:
+            row = df[df['POS'] == pos]
+            if not row.empty:
+                a, g = row[['A', 'G']].values[0]
+                total = a + g
+                if total > 0:
+                    result = binomtest(a, n=total, p=0.5)
+                    p_val = result.pvalue
+                    if p_val < 0.05:
+                        genotype = "A-G"
+                    else:
+                        genotype = "A-A" if a > g else "G-G"
+                    zygosity_results.append((pos, genotype, p_val))
+                else:
+                    zygosity_results.append((pos, "No A/G", None))
+            else:
+                zygosity_results.append((pos, "Not found", None))
+
         # Create a PDF file
         with PdfPages(output_pdf) as pdf:
             # Plot CpG-specific C percentage (smoothed)
@@ -29,7 +52,8 @@ def add_cpg_methylation_plot(input_csv, output_pdf):
                        (df['next_pos'] == df['POS'] + 1)]
             
             if len(cpg_df) > 1:
-                fig2, ax2 = plt.subplots(figsize=(15, 5))
+                fig2, ax2 = plt.subplots(figsize=(10, 5))
+                fig2.subplots_adjust(bottom=0.4)
                 
                 # Smooth the C percentage data
                 sigma = 1.5  # Smoothing factor
@@ -39,6 +63,29 @@ def add_cpg_methylation_plot(input_csv, output_pdf):
                 ax2.scatter(cpg_df['POS'], cpg_df['percent_C'], 
                            c='blue', alpha=0.3, label='Raw %C')
                 
+                # Add vertical lines and labels at specified positions
+                for pos, genotype, p_val in zygosity_results:
+                    if isinstance(p_val, float):
+                        if genotype == "A-G":
+                            color = "green"
+                        elif genotype == "A-A":
+                            color = "blue"
+                        elif genotype == "G-G":
+                            color = "red"
+                        else:
+                            color = "gray"
+
+                        ax2.axvline(x=pos, color=color, linestyle='--', linewidth=1.5, alpha=0.7)
+
+                        label = f"{genotype}\nPosition: {pos}\np = {p_val:.3g}"
+                        ax2.annotate(label,
+                            xy=(pos, 0), xycoords='data',
+                            xytext=(0, -50), textcoords='offset points',
+                            ha='center', va='top',
+                            fontsize=9, color=color,
+                            bbox=dict(facecolor='white', edgecolor=color, boxstyle='round,pad=0.3'))
+                        
+                
                 # Optional: Add T percentage for comparison
                 # smoothed_T = gaussian_filter1d(cpg_df['percent_T'], sigma)
                 # ax2.plot(cpg_df['POS'], smoothed_T, 'r--', linewidth=1, label='Smoothed %T')
@@ -46,7 +93,7 @@ def add_cpg_methylation_plot(input_csv, output_pdf):
                 ax2.set_xlabel('Position')
                 ax2.set_ylabel('Percent Methylation')
                 ax2.set_title('Percent methylation per CpG')
-                ax2.set_ylim(0, 100)
+                ax2.set_ylim(-10, 100)
                 ax2.grid(True, linestyle='--', alpha=0.3)
                 ax2.legend()
                 
