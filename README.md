@@ -87,3 +87,6 @@ results/
 
 ### CpG Sites Only
 ![Nucleotide Counts - CpG Only](test_sample_line_plot_cpg_only.png)
+
+### Smooth percent methylation
+![Nucleotide Counts - CpG Only](test_sample_percent_mC.png)
