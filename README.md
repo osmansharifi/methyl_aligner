@@ -49,6 +49,8 @@ arguments.
 
 ```
 usage: python3 percent_mC.py <input_csv> <output_pdf>
+option:
+-snp
 ```
 
 Notes:
