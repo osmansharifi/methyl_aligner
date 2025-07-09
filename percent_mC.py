@@ -2,12 +2,30 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import sys
+import argparse
 from scipy.ndimage import gaussian_filter1d
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy.stats import binomtest
 
-def add_cpg_methylation_plot(input_csv, output_pdf):
+def parse_arguments():
+    parser = argparse.ArgumentParser(
+        description='Generate CpG methylation plots from CSV data',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  python3 percent_mC.py input.csv output.pdf
+  python3 percent_mC.py input.csv output.pdf -snp
+        '''
+    )
+    
+    parser.add_argument('input_csv', help='Input CSV file containing methylation data')
+    parser.add_argument('output_pdf', help='Output PDF file for the plot')
+    parser.add_argument('-snp', action='store_true', 
+                       help='Add vertical lines at predefined SNP positions (397, 492) with zygosity analysis')
+    
+    return parser.parse_args()
+
+def add_cpg_methylation_plot(input_csv, output_pdf, add_snp_lines=False, positions=None):
     try:
         # Read the CSV file
         df = pd.read_csv(input_csv)
@@ -17,27 +35,28 @@ def add_cpg_methylation_plot(input_csv, output_pdf):
         df['percent_C'] = df['C'] / total_coverage * 100  # Unmethylated
         df['percent_T'] = df['T'] / total_coverage * 100  # Methylated
         
-        # Analyze A, G content using bionomial test
-        positions = [397, 492]
         zygosity_results = []
-
-        for pos in positions:
-            row = df[df['POS'] == pos]
-            if not row.empty:
-                a, g = row[['A', 'G']].values[0]
-                total = a + g
-                if total > 0:
-                    result = binomtest(a, n=total, p=0.5)
-                    p_val = result.pvalue
-                    if p_val < 0.05:
-                        genotype = "A-G"
+        
+        # Only perform zygosity analysis if SNP lines are requested
+        if add_snp_lines and positions:
+            # Analyze A, G content using binomial test
+            for pos in positions:
+                row = df[df['POS'] == pos]
+                if not row.empty:
+                    a, g = row[['A', 'G']].values[0]
+                    total = a + g
+                    if total > 0:
+                        result = binomtest(a, n=total, p=0.5)
+                        p_val = result.pvalue
+                        if p_val < 0.05:
+                            genotype = "A-G"
+                        else:
+                            genotype = "A-A" if a > g else "G-G"
+                        zygosity_results.append((pos, genotype, p_val))
                     else:
-                        genotype = "A-A" if a > g else "G-G"
-                    zygosity_results.append((pos, genotype, p_val))
+                        zygosity_results.append((pos, "No A/G", None))
                 else:
-                    zygosity_results.append((pos, "No A/G", None))
-            else:
-                zygosity_results.append((pos, "Not found", None))
+                    zygosity_results.append((pos, "Not found", None))
 
         # Create a PDF file
         with PdfPages(output_pdf) as pdf:
@@ -63,28 +82,28 @@ def add_cpg_methylation_plot(input_csv, output_pdf):
                 ax2.scatter(cpg_df['POS'], cpg_df['percent_C'], 
                            c='blue', alpha=0.3, label='Raw %C')
                 
-                # Add vertical lines and labels at specified positions
-                for pos, genotype, p_val in zygosity_results:
-                    if isinstance(p_val, float):
-                        if genotype == "A-G":
-                            color = "green"
-                        elif genotype == "A-A":
-                            color = "blue"
-                        elif genotype == "G-G":
-                            color = "red"
-                        else:
-                            color = "gray"
+                # Add vertical lines and labels at specified positions (only if requested)
+                if add_snp_lines:
+                    for pos, genotype, p_val in zygosity_results:
+                        if isinstance(p_val, float):
+                            if genotype == "A-G":
+                                color = "green"
+                            elif genotype == "A-A":
+                                color = "blue"
+                            elif genotype == "G-G":
+                                color = "red"
+                            else:
+                                color = "gray"
 
-                        ax2.axvline(x=pos, color=color, linestyle='--', linewidth=1.5, alpha=0.7)
+                            ax2.axvline(x=pos, color=color, linestyle='--', linewidth=1.5, alpha=0.7)
 
-                        label = f"{genotype}\nPosition: {pos}\np = {p_val:.3g}"
-                        ax2.annotate(label,
-                            xy=(pos, 0), xycoords='data',
-                            xytext=(0, -50), textcoords='offset points',
-                            ha='center', va='top',
-                            fontsize=9, color=color,
-                            bbox=dict(facecolor='white', edgecolor=color, boxstyle='round,pad=0.3'))
-                        
+                            label = f"{genotype}\nPosition: {pos}\np = {p_val:.3g}"
+                            ax2.annotate(label,
+                                xy=(pos, 0), xycoords='data',
+                                xytext=(0, -50), textcoords='offset points',
+                                ha='center', va='top',
+                                fontsize=9, color=color,
+                                bbox=dict(facecolor='white', edgecolor=color, boxstyle='round,pad=0.3'))
                 
                 # Optional: Add T percentage for comparison
                 # smoothed_T = gaussian_filter1d(cpg_df['percent_T'], sigma)
@@ -110,12 +129,15 @@ def add_cpg_methylation_plot(input_csv, output_pdf):
         print(f"Error processing file: {str(e)}")
         raise
 
+def main():
+    args = parse_arguments()
+    
+    # Use predefined positions if SNP analysis is requested
+    predefined_positions = [397, 492]
+    add_snp_lines = args.snp
+    positions = predefined_positions if add_snp_lines else None
+    
+    add_cpg_methylation_plot(args.input_csv, args.output_pdf, add_snp_lines, positions)
+
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("usage: python3 percent_mC.py <input_csv> <output_pdf>")
-        sys.exit(1)
-    
-    input_csv = sys.argv[1]
-    output_pdf = sys.argv[2]
-    
-    add_cpg_methylation_plot(input_csv, output_pdf)
+    main()
