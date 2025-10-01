@@ -48,9 +48,15 @@ The `percent_mC.py` usage statement is reported if you don't give it the right
 arguments.
 
 ```
-usage: python3 percent_mC.py <input_csv> <output_pdf>
+usage: 
+python3 percent_mC.py output.pdf --case file1.csv file2.csv --control file3.csv file4.csv
+python3 percent_mC.py output.pdf --case file1.csv --control file2.csv -snp
+
 option:
--snp
+-snp		shows two predetermined snps
+--case		groups your experimental csvs
+--control	groups your control csvs
+--color		colors each sample uniquely
 ```
 
 Notes:
