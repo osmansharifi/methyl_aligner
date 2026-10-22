@@ -12,6 +12,22 @@ import matplotlib.pyplot as plt
 from queue import Queue
 from collections import defaultdict
 
+# Default reference: NHIP_pro_forward_HY (801 bp), built in so no FASTA is needed
+DEFAULT_REFERENCE_SEQ = (
+    "GCAGACTCTGGAGAAGCCCAGGAGCGCGTGTCCCCGCCGGCCCCGCTCAGCCTGACCTGCTTTTCCCCAC"
+    "AGAGGTGCCGGGGTTCGGTGCAGTCTGGCCGTGTCCTCCTCTTCTCGCGGTTTCAGATTCTTCTTGCGTG"
+    "ACATTTTATCACACAAGACCGTGTTCGGGGATGGGGTGTTCTGAGCACGCCCTTACCGAGCCAGGCTCAC"
+    "CCAGTTCCCCATCTAGAGCTCCCTGCTGGCATCTCTCACCTGGGACCCCAGCCTGCAAGACTCCGACACC"
+    "CACGCCCTTAGGGTGATGTGGCCGCGCCCAGCCTGCGCTCAGCACCACGGGAGGGAGGGCGGCAGGCGGA"
+    "AGCCCCGGCCATCTTGGGAAGGGCCTTTTGGGACCGTGTGTTCCGCTGAGAACCACAGACCCATGCTTCA"
+    "GACGCTACAGATTTCTCTCTCAAATGCCTGGATTCAAAATATAAAAGTGTGTTTGAGCAAACAGCAAAAT"
+    "ATTTGGGAAATTCTCCCAGCGAGGCTTCTAATGACCCCGTAGGAAAAGCCAGGCTGCTCCCTGCTGCGCC"
+    "TCCAGCGAACTTCCCACCGGGCAGGACTCTGGGAAGAAGAGCAAAGGGTTCTATTTTGCGTAGAATTTAA"
+    "ATAAAATTGCTTCACAGACGGGAAACGTCAAGCAAGCAGCACTCTGAGCCCATGCGTGCTTTTAATGCCT"
+    "GAATGACATCGCAATTCAGTCTGAGTTCCCGCCTGGGCTCAGGGCCTTCTGAACTGCCGGGGGCTGTGAA"
+    "ATGGTTTATAATCAGAAGAGAAGCAGTGAGA"
+)
+
 #######################
 ## Argument Parsing  ##
 #######################
@@ -21,8 +37,10 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description='Align FASTQ reads to a FASTA reference and visualize results.')
     
     # Required arguments
-    parser.add_argument('fasta', help='Reference FASTA file')
     parser.add_argument('fastq', help='Query FASTQ file')
+    parser.add_argument('-r', '--reference', dest='fasta',
+                       help='Custom reference FASTA (default: NHIP_pro_forward_HY). '
+                            'Use at your own risk: SNP calling does not apply to a custom reference.')
     
     # Alignment options
     parser.add_argument('-p', '--percent', type=int, default=70,
@@ -194,13 +212,23 @@ def run_alignment(args):
     
     os.makedirs(wdir, exist_ok=True)
     
-    # Process reference FASTA
-    with open(args.fasta, 'r') as fh, open(f"{wdir}/ref.fa", 'w') as of:
+    # Process reference FASTA (built-in NHIP_pro_forward_HY unless -r is given)
+    if args.fasta:
+        with open(args.fasta, 'r') as fh:
+            next(fh)  # Skip header
+            ref_seq = ''.join(line.strip() for line in fh)
+    else:
+        ref_seq = DEFAULT_REFERENCE_SEQ
+    with open(f"{wdir}/ref.fa", 'w') as of:
         of.write(">r\n")
-        next(fh)  # Skip header
-        ref_seq = ''.join(line.strip() for line in fh)
         of.write(ref_seq + "\n")
-    
+
+    # Warn if the reference is not the default: SNP calling does not apply
+    if ref_seq.upper() != DEFAULT_REFERENCE_SEQ:
+        sys.stderr.write(f"\nWARNING: using a custom reference ({args.fasta}) instead of the default\n"
+                         f"NHIP_pro_forward_HY reference. You are proceeding at your own risk.\n"
+                         f"SNP calling (percent_mC.py -snp) does NOT apply to this reference.\n\n")
+
     # Process FASTQ and check for duplicates
     read_counts = defaultdict(int)
     with open(args.fastq, 'r') as fq:
