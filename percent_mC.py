@@ -199,11 +199,21 @@ def create_methylation_plot(case_files, control_files, output_pdf, add_snp_lines
                             xy=(pos, 0), xycoords='data',
                             # alternate sides so nearby SNP labels don't overlap
                             xytext=(-6 if i % 2 == 0 else 6, -70), textcoords='offset points',
-                            ha='right' if i % 2 == 0 else 'left', va='top',
+                            ha='right' if i % 2 == 0 else 'left', va='top', multialignment='left',
                             fontsize=9, color=color,
-                            bbox=dict(facecolor='white', edgecolor=color, 
+                            bbox=dict(facecolor='white', edgecolor=color,
                                     boxstyle='round,pad=0.3'))
-        
+
+                # Key explaining how to read the SNP calls
+                if zygosity_results:
+                    key = ("p: REF vs ALT reads tested against 50:50\n"
+                           "p < 0.05 homozygous   p ≥ 0.05 heterozygous\n"
+                           "Green het   Orange hom REF   Purple hom ALT")
+                    fig.text(0.98, 0.02, key, ha='right', va='bottom', multialignment='left', fontsize=8,
+                             family='monospace', color='dimgray',
+                             bbox=dict(facecolor='white', edgecolor='lightgray',
+                                       boxstyle='round,pad=0.5'))
+
         ax.set_xlabel('Position', fontsize=12)
         ax.set_ylabel('Percent Methylation', fontsize=12)
         ax.set_title('CpG Methylation: Case vs Control', fontsize=14, fontweight='bold')
