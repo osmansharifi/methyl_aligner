@@ -31,10 +31,22 @@ enough to cover the amplion region.
 The `methyl_aligner` usage statement is reported if you don't give it the right
 arguments.
 
+### Default reference ###
+
+The NHIP_pro_forward_HY reference is built into the scripts, so by default you
+only need to provide a FASTQ; no reference FASTA is needed. To align to a different reference, pass it
+with `-r`. **This is at your own risk:** the SNP positions used by
+`percent_mC.py -snp` are coordinates on `NHIP_pro_forward_HY`, so SNP calling
+does not apply to any other reference. `methyl_aligner.py` prints a warning when
+a custom reference is used, and `percent_mC.py` ignores `-snp` (with a warning)
+when the genotyped file was not aligned to the default reference.
+
 ```
-usage: python3 methyl_aligner.py [options] <fasta> <fastq>
+usage: python3 methyl_aligner.py [options] <fastq>
 options:
   -h        show this help message and exit
+  -r <path> custom reference FASTA [built-in NHIP_pro_forward_HY]
+              at your own risk: SNP calling does not apply
   -p <int>  percent identity minimum [70]
   -t <int>  threads [4]
   -w <int>  wrap [50]
@@ -53,7 +65,8 @@ python3 percent_mC.py output.pdf --case file1.csv file2.csv --control file3.csv 
 python3 percent_mC.py output.pdf --case file1.csv --control file2.csv -snp
 
 option:
--snp		shows two predetermined snps
+-snp		genotypes rs4823981 (G>T, pos 238) and rs4823982 (G>A, pos 333)
+		(default NHIP_pro_forward_HY reference only)
 --case		groups your experimental csvs
 --control	groups your control csvs
 --color		colors each sample uniquely
@@ -76,7 +89,11 @@ alignments.
 ## Example ##
 
 ```
-python3 methyl_aligner.py -m -p 70 reference.fa test_sample.fq
+python3 methyl_aligner.py -m -p 70 test_sample.fq
+```
+Using a custom reference instead (prints a warning; SNP calling will not apply):
+```
+python3 methyl_aligner.py -m -p 70 -r my_reference.fa test_sample.fq
 ```
 ## Example Output ##
 ```
