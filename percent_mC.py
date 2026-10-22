@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 import pandas as pd
 import numpy as np
@@ -7,6 +6,21 @@ import argparse
 from scipy.ndimage import gaussian_filter1d
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy.stats import binomtest
+# Default reference: NHIP_pro_forward_HY (801 bp); SNP positions are coordinates on it only
+DEFAULT_REFERENCE_SEQ = (
+    "GCAGACTCTGGAGAAGCCCAGGAGCGCGTGTCCCCGCCGGCCCCGCTCAGCCTGACCTGCTTTTCCCCAC"
+    "AGAGGTGCCGGGGTTCGGTGCAGTCTGGCCGTGTCCTCCTCTTCTCGCGGTTTCAGATTCTTCTTGCGTG"
+    "ACATTTTATCACACAAGACCGTGTTCGGGGATGGGGTGTTCTGAGCACGCCCTTACCGAGCCAGGCTCAC"
+    "CCAGTTCCCCATCTAGAGCTCCCTGCTGGCATCTCTCACCTGGGACCCCAGCCTGCAAGACTCCGACACC"
+    "CACGCCCTTAGGGTGATGTGGCCGCGCCCAGCCTGCGCTCAGCACCACGGGAGGGAGGGCGGCAGGCGGA"
+    "AGCCCCGGCCATCTTGGGAAGGGCCTTTTGGGACCGTGTGTTCCGCTGAGAACCACAGACCCATGCTTCA"
+    "GACGCTACAGATTTCTCTCTCAAATGCCTGGATTCAAAATATAAAAGTGTGTTTGAGCAAACAGCAAAAT"
+    "ATTTGGGAAATTCTCCCAGCGAGGCTTCTAATGACCCCGTAGGAAAAGCCAGGCTGCTCCCTGCTGCGCC"
+    "TCCAGCGAACTTCCCACCGGGCAGGACTCTGGGAAGAAGAGCAAAGGGTTCTATTTTGCGTAGAATTTAA"
+    "ATAAAATTGCTTCACAGACGGGAAACGTCAAGCAAGCAGCACTCTGAGCCCATGCGTGCTTTTAATGCCT"
+    "GAATGACATCGCAATTCAGTCTGAGTTCCCGCCTGGGCTCAGGGCCTTCTGAACTGCCGGGGGCTGTGAA"
+    "ATGGTTTATAATCAGAAGAGAAGCAGTGAGA"
+)
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
@@ -25,7 +39,8 @@ Examples:
     parser.add_argument('--control', nargs='+', required=True,
                        help='Input CSV files for control group')
     parser.add_argument('-snp', action='store_true', 
-                       help='Add vertical lines at predefined SNP positions (397, 492) with zygosity analysis')
+                       help='Add vertical lines at rs4823981 (G>T, 238) and rs4823982 (G>A, 333) with zygosity analysis '
+                            '(default NHIP_pro_forward_HY reference only)')
     parser.add_argument('--color', action='store_true',
                        help='Use different colors for each file instead of grouping by case/control')
     
@@ -59,32 +74,33 @@ def process_csv_file(input_csv):
         return None
 
 def analyze_snp_zygosity(df, positions):
-    """Analyze zygosity at specified SNP positions"""
+    """Analyze zygosity at specified SNP positions, given as (rsid, pos, ref, alt)"""
     zygosity_results = []
     
-    for pos in positions:
+    for rsid, pos, ref, alt in positions:
         row = df[df['POS'] == pos]
         if not row.empty:
-            a, g = row[['A', 'G']].values[0]
-            total = a + g
-            if total > 0:
+            r, a = row[[ref, alt]].values[0]
+            total = r + a
+            if total >= 10:  # minimum ref + alt reads to make a call
                 result = binomtest(a, n=total, p=0.5)
                 p_val = result.pvalue
-                if p_val < 0.05:
-                    genotype = "A-G"
+                # Not significantly different from 50:50 means heterozygous
+                if p_val >= 0.05:
+                    genotype = f"{ref}-{alt}"
                 else:
-                    genotype = "A-A" if a > g else "G-G"
-                zygosity_results.append((pos, genotype, p_val))
+                    genotype = f"{alt}-{alt}" if a > r else f"{ref}-{ref}"
+                zygosity_results.append((rsid, pos, ref, alt, r, a, genotype, p_val))
             else:
-                zygosity_results.append((pos, "No A/G", None))
+                zygosity_results.append((rsid, pos, ref, alt, r, a, "Low coverage", None))
         else:
-            zygosity_results.append((pos, "Not found", None))
+            zygosity_results.append((rsid, pos, ref, alt, 0, 0, "Not found", None))
     
     return zygosity_results
 
 def create_methylation_plot(case_files, control_files, output_pdf, add_snp_lines=False, use_colors=False):
     """Create combined methylation plot for all files"""
-    predefined_positions = [397, 492]
+    predefined_positions = [('rs4823981', 238, 'G', 'T'), ('rs4823982', 333, 'G', 'A')]
     
     # Process all files
     case_data = []
@@ -155,15 +171,22 @@ def create_methylation_plot(case_files, control_files, output_pdf, add_snp_lines
                 total_coverage = df['A'] + df['C'] + df['G'] + df['T']
                 df['percent_C'] = df['C'] / total_coverage * 100
                 
-                zygosity_results = analyze_snp_zygosity(df, predefined_positions)
+                # SNP positions only apply to the default reference
+                default_ref_used = ''.join(df.sort_values('POS')['REF'].astype(str)).upper() == DEFAULT_REFERENCE_SEQ
+                if not default_ref_used:
+                    print(f"WARNING: {first_file} was not aligned to the default NHIP_pro_forward_HY reference.\n"
+                          f"SNP calling does not apply to a custom reference, so -snp is ignored.")
                 
-                for pos, genotype, p_val in zygosity_results:
+                zygosity_results = analyze_snp_zygosity(df, predefined_positions) if default_ref_used else []
+                
+                for i, (rsid, pos, ref, alt, r, a, genotype, p_val) in enumerate(zygosity_results):
+                    print(f"{rsid} ({ref}>{alt}) position {pos}: {genotype}  {ref}={r} {alt}={a}")
                     if isinstance(p_val, float):
-                        if genotype == "A-G":
+                        if genotype == f"{ref}-{alt}":
                             color = "green"
-                        elif genotype == "A-A":
+                        elif genotype == f"{alt}-{alt}":
                             color = "purple"
-                        elif genotype == "G-G":
+                        elif genotype == f"{ref}-{ref}":
                             color = "orange"
                         else:
                             color = "gray"
@@ -171,11 +194,12 @@ def create_methylation_plot(case_files, control_files, output_pdf, add_snp_lines
                         ax.axvline(x=pos, color=color, linestyle='--', 
                                  linewidth=1.5, alpha=0.7)
                         
-                        label = f"{genotype}\nPosition: {pos}\np = {p_val:.3g}"
+                        label = f"{rsid} ({ref}>{alt})\n{genotype}\nPosition: {pos}\np = {p_val:.3g}"
                         ax.annotate(label,
                             xy=(pos, 0), xycoords='data',
-                            xytext=(0, -50), textcoords='offset points',
-                            ha='center', va='top',
+                            # alternate sides so nearby SNP labels don't overlap
+                            xytext=(-6 if i % 2 == 0 else 6, -70), textcoords='offset points',
+                            ha='right' if i % 2 == 0 else 'left', va='top',
                             fontsize=9, color=color,
                             bbox=dict(facecolor='white', edgecolor=color, 
                                     boxstyle='round,pad=0.3'))
