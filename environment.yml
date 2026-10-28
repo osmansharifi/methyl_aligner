@@ -1,0 +1,11 @@
+name: methyl_aligner_env
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python>=3.9
+  - emboss
+  - pandas
+  - numpy
+  - scipy>=1.7
+  - matplotlib>=3.6
