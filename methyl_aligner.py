@@ -1,140 +1,393 @@
-# methyl_aligner
-======
+#!/usr/bin/env python3
 
-methyl_aligner performs a global anchored alignment between a reference sequence (in
-fasta format) and a collection of reads (in fastq format). It is designed to
-align bisulfite-converted reads from an amplicon to a reference sequence.
+import argparse
+import os
+import sys
+import subprocess
+import shutil
+import threading
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from queue import Queue
+from collections import defaultdict
 
-## Installation ##
+# Journal figure style (Arial on most systems, editable text in PDFs)
+plt.rcParams.update({
+    'font.family': 'sans-serif',
+    'font.sans-serif': ['Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans'],
+    'font.size': 8, 'axes.labelsize': 8, 'axes.titlesize': 8,
+    'xtick.labelsize': 7, 'ytick.labelsize': 7, 'legend.fontsize': 7,
+    'axes.linewidth': 0.8, 'xtick.major.width': 0.8, 'ytick.major.width': 0.8,
+    'xtick.major.size': 3, 'ytick.major.size': 3,
+    'xtick.direction': 'out', 'ytick.direction': 'out',
+    'axes.spines.top': False, 'axes.spines.right': False,
+    'axes.grid': False, 'legend.frameon': False,
+    'pdf.fonttype': 42, 'ps.fonttype': 42,
+    'savefig.dpi': 300,
+})
 
-In order to run `methyl_aligner` you need to install EMBOSS and have `needle` in the
-executable path. A convenient solution is to install via conda. First install
-miniconda (or anaconda) and then type the following:
+# Default reference: NHIP_pro_forward_HY (801 bp), built in so no FASTA is needed
+DEFAULT_REFERENCE_SEQ = (
+    "GCAGACTCTGGAGAAGCCCAGGAGCGCGTGTCCCCGCCGGCCCCGCTCAGCCTGACCTGCTTTTCCCCAC"
+    "AGAGGTGCCGGGGTTCGGTGCAGTCTGGCCGTGTCCTCCTCTTCTCGCGGTTTCAGATTCTTCTTGCGTG"
+    "ACATTTTATCACACAAGACCGTGTTCGGGGATGGGGTGTTCTGAGCACGCCCTTACCGAGCCAGGCTCAC"
+    "CCAGTTCCCCATCTAGAGCTCCCTGCTGGCATCTCTCACCTGGGACCCCAGCCTGCAAGACTCCGACACC"
+    "CACGCCCTTAGGGTGATGTGGCCGCGCCCAGCCTGCGCTCAGCACCACGGGAGGGAGGGCGGCAGGCGGA"
+    "AGCCCCGGCCATCTTGGGAAGGGCCTTTTGGGACCGTGTGTTCCGCTGAGAACCACAGACCCATGCTTCA"
+    "GACGCTACAGATTTCTCTCTCAAATGCCTGGATTCAAAATATAAAAGTGTGTTTGAGCAAACAGCAAAAT"
+    "ATTTGGGAAATTCTCCCAGCGAGGCTTCTAATGACCCCGTAGGAAAAGCCAGGCTGCTCCCTGCTGCGCC"
+    "TCCAGCGAACTTCCCACCGGGCAGGACTCTGGGAAGAAGAGCAAAGGGTTCTATTTTGCGTAGAATTTAA"
+    "ATAAAATTGCTTCACAGACGGGAAACGTCAAGCAAGCAGCACTCTGAGCCCATGCGTGCTTTTAATGCCT"
+    "GAATGACATCGCAATTCAGTCTGAGTTCCCGCCTGGGCTCAGGGCCTTCTGAACTGCCGGGGGCTGTGAA"
+    "ATGGTTTATAATCAGAAGAGAAGCAGTGAGA"
+)
 
-```
-conda config --add channels defaults
-conda config --add channels bioconda
-conda config --add channels conda-forge
-conda config --set channel_priority strict
-conda create --name methyl_aligner_env emboss
-conda activate methyl_aligner_env
-conda install pandas
-conda install seaborn
-```
+#######################
+## Argument Parsing  ##
+#######################
 
-Global alignment is not computationally efficient: it is slow and uses a lot of
-memory. For this reason, the reference sequence should be a fragment just large
-enough to cover the amplion region.
+def parse_arguments():
+    """Parse and return all command line arguments."""
+    parser = argparse.ArgumentParser(description='Align FASTQ reads to a FASTA reference and visualize results.')
+    
+    # Required arguments
+    parser.add_argument('fastq', help='Query FASTQ file')
+    parser.add_argument('-r', '--reference', dest='fasta',
+                       help='Custom reference FASTA (default: NHIP_pro_forward_HY). '
+                            'Use at your own risk: SNP calling does not apply to a custom reference.')
+    
+    # Alignment options
+    parser.add_argument('-p', '--percent', type=int, default=70,
+                       help='Percent identity minimum (default: 70)')
+    parser.add_argument('-t', '--threads', type=int, default=4,
+                       help='Number of threads (default: 4)')
+    parser.add_argument('-w', '--wrap', type=int, default=50,
+                       help='Wrap length for output (default: 50)')
+    parser.add_argument('-d', '--tempdir', 
+                       help='Create and keep a named working directory for temp files')
+    parser.add_argument('-m', '--methyl', action='store_true',
+                       help='Methyl mode: uses asymmetric scoring matrix with C:T matching')
+    parser.add_argument('-f', '--force', action='store_true',
+                       help='Force rewrite over named working directory')
+    
+    return parser.parse_args()
 
-## Usage ##
+def get_sample_name(fastq_path):
+    """Extract sample name from FASTQ filename."""
+    base = os.path.basename(fastq_path)
+    # Remove common extensions
+    for ext in ['.fastq', '.fq', '.fastq.gz', '.fq.gz']:
+        if base.endswith(ext):
+            base = base[:-len(ext)]
+            break
+    return base
 
-The `methyl_aligner` usage statement is reported if you don't give it the right
-arguments.
+#########################
+## Alignment Functions ##
+#########################
 
-### Default reference ###
+def anti(seq):
+    """Return the reverse complement of a DNA sequence."""
+    complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A'}
+    return ''.join([complement[nt] for nt in seq[::-1]])
 
-The NHIP_pro_forward_HY reference is built into the scripts, so by default you
-only need to provide a FASTQ; no reference FASTA is needed. To align to a different reference, pass it
-with `-r`. **This is at your own risk:** the SNP positions used by
-`percent_mC.py -snp` are coordinates on `NHIP_pro_forward_HY`, so SNP calling
-does not apply to any other reference. `methyl_aligner.py` prints a warning when
-a custom reference is used, and `percent_mC.py` ignores `-snp` (with a warning)
-when the genotyped file was not aligned to the default reference.
+def run_needle(ref_file, seq, strand, wdir, tid, methyl_mode, mat_file):
+    """Run needle alignment and return alignment results."""
+    fasta = f"{wdir}/{tid}.{strand}.fa"
+    out = f"{wdir}/{tid}.{strand}.fa.out"
+    
+    with open(fasta, 'w') as f:
+        f.write(f">s\n{seq}\n")
+    
+    params = [
+        "needle",
+        "-asequence", ref_file,
+        "-bsequence", fasta,
+        "-gapopen", "3",
+        "-gapextend", "1",
+        "-datafile", mat_file,
+        "-endweight",
+        "-outfile", out
+    ]
+    
+    try:
+        subprocess.run(params, check=True, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        sys.stderr.write("Error running needle\n")
+        sys.exit(1)
+    
+    ra, sa, score = "", "", 0
+    with open(out, 'r') as fh:
+        for line in fh:
+            if line.startswith('# Score:'):
+                score = float(line.split()[2])
+            elif line.startswith('r') or line.startswith('s'):
+                parts = line.split()
+                if parts[0] == 'r':
+                    ra += parts[2]
+                elif parts[0] == 's':
+                    sa += parts[2]
+    
+    match, total = 0, 0
+    for r, s in zip(ra, sa):
+        if r == '-' or s == '-':
+            continue
+        if methyl_mode:
+            if r in ['A', 'G']:
+                if r == s:
+                    match += 1
+                total += 1
+        else:
+            if r == s:
+                match += 1
+            total += 1
+    
+    return {'ref': ra, 'seq': sa, 'pct': match/total if total > 0 else 0}
 
-```
-usage: python3 methyl_aligner.py [options] <fastq>
-options:
-  -h        show this help message and exit
-  -r <path> custom reference FASTA [built-in NHIP_pro_forward_HY]
-              at your own risk: SNP calling does not apply
-  -p <int>  percent identity minimum [70]
-  -t <int>  threads [4]
-  -w <int>  wrap [50]
-  -d <path> create and keep a named working directory for temp files
-  -m        methyl mode
-              uses an asymmetric scoring matrix with C:T matching
-              computes percent identity from A/G only
-  -f        force rewrite over named working directory
-```
-The `percent_mC.py` usage statement is reported if you don't give it the right
-arguments.
+def align_worker(q, results, ref_file, wdir, methyl_mode, mat_file):
+    """Worker function for alignment threads."""
+    tid = threading.get_ident()
+    alignments = []
+    while True:
+        try:
+            plus = q.get_nowait()
+        except:
+            break
+        
+        anti_seq = anti(plus)
+        a1 = run_needle(ref_file, plus, f"{tid}+", wdir, tid, methyl_mode, mat_file)
+        a2 = run_needle(ref_file, anti_seq, f"{tid}-", wdir, tid, methyl_mode, mat_file)
+        max_align = a1 if a1['pct'] > a2['pct'] else a2
+        alignments.append(max_align)
+        q.task_done()
+    
+    for item in alignments:
+        results.put(item)
 
-```
-usage: 
-python3 percent_mC.py output.pdf --case file1.csv file2.csv --control file3.csv file4.csv
-python3 percent_mC.py output.pdf --case file1.csv --control file2.csv -snp
+#############################
+## Visualization Functions ##
+#############################
 
-option:
--snp		genotypes rs4823981 (G>T, pos 238) and rs4823982 (G>A, pos 333)
-		(default NHIP_pro_forward_HY reference only)
---case		groups your experimental csvs
---control	groups your control csvs
---color		colors each sample uniquely
-```
+def filter_cpg_sites(df):
+    """Filter dataframe to only CpG sites (where REF = C and next REF = G)."""
+    return df[(df['REF'] == 'C') & (df['REF'].shift(-1) == 'G')]
 
-### Differential methylation ###
+def calculate_percentages(df):
+    """Calculate C and T percentages from nucleotide counts."""
+    total_counts = df[['A', 'C', 'G', 'T']].sum().sum()
+    percent_C = (df['C'].sum() / total_counts) * 100
+    percent_T = (df['T'].sum() / total_counts) * 100
+    return percent_C, percent_T
 
-`percent_mC.py` tests case vs control at every CpG with at least 10 C + T reads
-in each sample, and across the whole amplicon (mean methylation of all tested
-CpGs). Results are printed, summarized on the plot, and saved per CpG to
-`<output>_differential_methylation.csv` (case %, control %, difference, p value,
-Benjamini-Hochberg FDR). CpGs with FDR < 0.05 are marked with a star on the plot.
+def create_plot(df, title, output_path, percentages):
+    """Create and save a line plot of nucleotide counts."""
+    fig, ax = plt.subplots(figsize=(7.2, 3.0))  # double-column journal width
+    colors = {'A': '#009E73', 'C': '#0072B2', 'G': '#000000', 'T': '#D55E00'}  # Okabe-Ito
+    for nucleotide in ['A', 'C', 'G', 'T']:
+        ax.plot(df['POS'], df[nucleotide], label=nucleotide, color=colors[nucleotide], linewidth=0.7)
 
-* 2 or more files per group: Welch t-test on per-sample percent methylation.
-  Samples are the unit of replication, so PCR duplicates do not inflate p values.
-* 1 file in either group: Fisher's exact test on pooled C and T reads. This
-  treats reads as independent and ignores sample-to-sample variation, so treat
-  results as exploratory and use biological replicates for real comparisons.
+    ax.set_xlabel('Position in amplicon (bp)')
+    ax.set_ylabel('Read count')
+    ax.set_title(title, loc='left')
+    ax.set_xlim(left=0)
+    ax.set_ylim(bottom=0)
 
-Notes:
+    percent_C, percent_T = percentages
+    ax.legend(title='Base', bbox_to_anchor=(1.01, 1), loc='upper left', alignment='left')
 
-(1) By default, alignment is performed with a +1/-1 scoring matrix. in "methyl
-mode", the scoring matrix gives +1 to C:T matches in one direction and -1 in
-the other.
+    ax.text(1.02, 0.42, f'C: {percent_C:.1f}%\nT: {percent_T:.1f}%',
+            transform=ax.transAxes, va='top', ha='left')
 
-(2) Percent identity is calculated by ignoring gaps. In "methyl mode", percent
-identity is calculated from only the As and Gs in the reference sequence.
+    fig.tight_layout()
+    fig.savefig(output_path, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Plot saved as {output_path}")
 
-(3) To examine the temporary files, use the `-d` option to keep the working
-directory. This contains all of the intermediate FASTA files and pairwise
-alignments.
+##########################
+## Pipeline Functions   ##
+##########################
 
+def run_alignment(args):
+    """Run the alignment portion of the pipeline."""
+    # Check for needle
+    try:
+        subprocess.run(['which', 'needle'], check=True, stdout=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        sys.stderr.write("You must install 'emboss' and have 'needle' in your path\n")
+        sys.exit(1)
+    
+    # Set up working directory
+    if args.tempdir:
+        if os.path.exists(args.tempdir):
+            if not args.force:
+                sys.stderr.write(f"{args.tempdir} already exists, will not overwrite\n")
+                sys.exit(1)
+        wdir = args.tempdir
+    else:
+        wdir = f"temp.{os.getpid()}.methalign"
+    
+    os.makedirs(wdir, exist_ok=True)
+    
+    # Process reference FASTA (built-in NHIP_pro_forward_HY unless -r is given)
+    if args.fasta:
+        with open(args.fasta, 'r') as fh:
+            next(fh)  # Skip header
+            ref_seq = ''.join(line.strip() for line in fh)
+    else:
+        ref_seq = DEFAULT_REFERENCE_SEQ
+    with open(f"{wdir}/ref.fa", 'w') as of:
+        of.write(">r\n")
+        of.write(ref_seq + "\n")
 
-## Example ##
+    # Warn if the reference is not the default: SNP calling does not apply
+    if ref_seq.upper() != DEFAULT_REFERENCE_SEQ:
+        sys.stderr.write(f"\nWARNING: using a custom reference ({args.fasta}) instead of the default\n"
+                         f"NHIP_pro_forward_HY reference. You are proceeding at your own risk.\n"
+                         f"SNP calling (percent_mC.py -snp) does NOT apply to this reference.\n\n")
 
-```
-python3 methyl_aligner.py -m -p 70 test_sample.fq
-```
-Using a custom reference instead (prints a warning; SNP calling will not apply):
-```
-python3 methyl_aligner.py -m -p 70 -r my_reference.fa test_sample.fq
-```
-## Example Output ##
-```
-results/
-└── test_sample/
-    ├── test_sample_matrix.csv
-    ├── test_sample_matrix_ref_c.csv
-    ├── test_sample_line_plot_all_data.pdf
-    ├── test_sample_line_plot_cpg_only.pdf
-    └── test_sample_reference.txt
-```
-## Example Visualizations
+    # Process FASTQ and check for duplicates
+    read_counts = defaultdict(int)
+    with open(args.fastq, 'r') as fq:
+        while True:
+            header = fq.readline()
+            if not header:
+                break
+            seq = fq.readline().strip()
+            fq.readline()  # +
+            fq.readline()  # quality
+            read_counts[seq] += 1
+    
+    duplicates = sum(1 for cnt in read_counts.values() if cnt > 1)
+    if duplicates:
+        sys.stderr.write(f"{duplicates} duplicates found and skipped\n")
+    
+    # Create scoring matrix
+    normal_matrix = """    A   C   G   T
+A   1  -1  -1  -1
+C  -1   1  -1   1
+G  -1  -1   1  -1
+T  -1  -1  -1   1
+"""
+    
+    methyl_matrix = """    A   C   G   T
+A   1  -1  -1  -1
+C  -1   1  -1   1
+G  -1  -1   1  -1
+T  -1  -1  -1   1
+"""
+    
+    with open(f"{wdir}/mat", 'w') as mat:
+        mat.write(methyl_matrix if args.methyl else normal_matrix)
+    
+    # Set up threading
+    query_queue = Queue()
+    result_queue = Queue()
+    
+    for seq in read_counts.keys():
+        query_queue.put(seq)
+    
+    workers = []
+    for _ in range(args.threads):
+        t = threading.Thread(target=align_worker, args=(query_queue, result_queue, 
+                                               f"{wdir}/ref.fa", wdir, 
+                                               args.methyl, f"{wdir}/mat"))
+        t.start()
+        workers.append(t)
+    
+    for t in workers:
+        t.join()
+    
+    # Process results
+    all_alignments = []
+    skipped = 0
+    while not result_queue.empty():
+        alignment = result_queue.get()
+        if 100 * alignment['pct'] < args.percent:
+            skipped += 1
+            continue
+        all_alignments.append(alignment)
+    
+    sys.stderr.write(f"{skipped} alignments below {args.percent}% skipped ({len(all_alignments)} total)\n")
+    
+    if not all_alignments:
+        sys.stderr.write("no alignments to process\n")
+        if not args.tempdir:
+            shutil.rmtree(wdir)
+        sys.exit(0)
+    
+    # Process aligned sequences
+    aseqs = []
+    for alignment in all_alignments:
+        aseq = []
+        for r, s in zip(alignment['ref'], alignment['seq']):
+            if r != '-':
+                aseq.append(s)
+        aseqs.append(''.join(aseq))
+    
+    # Create position information dataframe
+    nts = ['A', 'C', 'G', 'T']
+    data = []
+    for i in range(len(ref_seq)):
+        counts = {'POS': i+1, 'REF': ref_seq[i]}
+        for nt in nts:
+            counts[nt] = 0
+        
+        for s in aseqs:
+            snt = s[i] if i < len(s) else ' '
+            if snt in counts:
+                counts[snt] += 1
+        data.append(counts)
+    
+    df = pd.DataFrame(data)
+    
+    # Clean up if using temporary directory
+    if not args.tempdir:
+        shutil.rmtree(wdir)
+    
+    return df, ref_seq
 
-### All Data
-![Nucleotide Counts - All Data](test_sample_line_plot_all_data.png)
+def run_visualization(df, sample_name, ref_seq):
+    """Run the visualization portion of the pipeline."""
+    # Create output directory based on sample name
+    output_dir = os.path.join("results", sample_name)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Filter CpG sites
+    df_ref_c = filter_cpg_sites(df)
+    
+    # Save data
+    df.to_csv(f'{output_dir}/{sample_name}_matrix.csv', index=False)
+    df_ref_c.to_csv(f'{output_dir}/{sample_name}_matrix_ref_c.csv', index=False)
+    print(f"Data saved to {output_dir}/{sample_name}_matrix.csv and {output_dir}/{sample_name}_matrix_ref_c.csv")
+    
+    # Create plots
+    create_plot(df, f'Nucleotide Counts by Position - {sample_name} (All Data)', 
+                f'{output_dir}/{sample_name}_line_plot_all_data.pdf', calculate_percentages(df))
+    
+    create_plot(df_ref_c, f'Nucleotide Counts by Position - {sample_name} (CpG Only)', 
+                f'{output_dir}/{sample_name}_line_plot_cpg_only.pdf', calculate_percentages(df_ref_c))
+    
+    # Save reference sequence
+    with open(f'{output_dir}/{sample_name}_reference.txt', 'w') as f:
+        f.write(ref_seq)
+    
+    return output_dir
 
-### CpG Sites Only
-![Nucleotide Counts - CpG Only](test_sample_line_plot_cpg_only.png)
-
-### Smooth percent methylation
-![Nucleotide Counts - CpG Only](test_sample_percent_mC.png)
-
-### Differential methylation (case vs control)
-![Differential methylation - case vs control](example_differential_methylation.png)
-
-Example with 3 case and 3 control samples simulated from `test_sample.fq`, where
-cases were made 30 points more methylated at 5 CpGs near positions 116 to 166.
-Each line is one sample. An asterisk (*) marks CpGs with FDR < 0.05, and the
-note under the plot gives the number of significant CpGs, the overall case vs
-control difference with its P value, and the SNP genotypes.
+###################
+## Main Function ##
+###################
+if __name__ == '__main__':
+        # Parse all arguments first
+    args = parse_arguments()
+    
+    # Get sample name from FASTQ filename
+    sample_name = get_sample_name(args.fastq)
+    
+    # Run alignment pipeline
+    df, ref_seq = run_alignment(args)
+    
+    # Run visualization pipeline
+    output_dir = run_visualization(df, sample_name, ref_seq)
+    
+    print(f"\nAll outputs saved to: {output_dir}")
