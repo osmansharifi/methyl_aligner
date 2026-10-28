@@ -7,6 +7,21 @@ import warnings
 from scipy.ndimage import gaussian_filter1d
 from matplotlib.backends.backend_pdf import PdfPages
 from scipy.stats import binomtest, ttest_ind, fisher_exact
+
+# Journal figure style (Arial on most systems, editable text in PDFs)
+plt.rcParams.update({
+    'font.family': 'sans-serif',
+    'font.sans-serif': ['Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans'],
+    'font.size': 8, 'axes.labelsize': 8, 'axes.titlesize': 8,
+    'xtick.labelsize': 7, 'ytick.labelsize': 7, 'legend.fontsize': 7,
+    'axes.linewidth': 0.8, 'xtick.major.width': 0.8, 'ytick.major.width': 0.8,
+    'xtick.major.size': 3, 'ytick.major.size': 3,
+    'xtick.direction': 'out', 'ytick.direction': 'out',
+    'axes.spines.top': False, 'axes.spines.right': False,
+    'axes.grid': False, 'legend.frameon': False,
+    'pdf.fonttype': 42, 'ps.fonttype': 42,
+    'savefig.dpi': 300,
+})
 # Default reference: NHIP_pro_forward_HY (801 bp); SNP positions are coordinates on it only
 DEFAULT_REFERENCE_SEQ = (
     "GCAGACTCTGGAGAAGCCCAGGAGCGCGTGTCCCCGCCGGCCCCGCTCAGCCTGACCTGCTTTTCCCCAC"
@@ -88,9 +103,9 @@ def analyze_snp_zygosity(df, positions):
                 p_val = result.pvalue
                 # Not significantly different from 50:50 means heterozygous
                 if p_val >= 0.05:
-                    genotype = f"{ref}-{alt}"
+                    genotype = f"{ref}/{alt}"
                 else:
-                    genotype = f"{alt}-{alt}" if a > r else f"{ref}-{ref}"
+                    genotype = f"{alt}/{alt}" if a > r else f"{ref}/{ref}"
                 zygosity_results.append((rsid, pos, ref, alt, r, a, genotype, p_val))
             else:
                 zygosity_results.append((rsid, pos, ref, alt, r, a, "Low coverage", None))
@@ -192,14 +207,18 @@ def create_methylation_plot(case_files, control_files, output_pdf, add_snp_lines
     
     # Create PDF
     with PdfPages(output_pdf) as pdf:
-        fig, ax = plt.subplots(figsize=(12, 6))
-        fig.subplots_adjust(bottom=0.4)
+        fig, ax = plt.subplots(figsize=(7.2, 3.2))  # double-column journal width
         
         sigma = 1.5  # Smoothing factor
+        notes = []   # figure notes printed under the plot
         
-        # Define color palette for --color mode
-        color_palette = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
-                        '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+        # Okabe-Ito colorblind-safe palette, used in this fixed order for --color mode
+        color_palette = ['#0072B2', '#D55E00', '#009E73', '#CC79A7',
+                        '#E69F00', '#56B4E9', '#000000']
+        group_colors = {'Case': '#D55E00', 'Control': '#0072B2'}
+        
+        def sample_name(f):
+            return f.split("/")[-1].rsplit(".", 1)[0]
         
         if use_colors:
             # Use different color for each file
@@ -208,27 +227,24 @@ def create_methylation_plot(case_files, control_files, output_pdf, add_snp_lines
             
             for i, (filename, cpg_df, group) in enumerate(all_files):
                 smoothed_C = gaussian_filter1d(cpg_df['percent_C'], sigma)
-                color = color_palette[i % len(color_palette)]
-                ax.plot(cpg_df['POS'], smoothed_C, 
-                       color=color, linewidth=2,
-                       label=f'{group}: {filename.split("/")[-1]}')
+                ax.plot(cpg_df['POS'], smoothed_C,
+                       color=color_palette[i % len(color_palette)], linewidth=1.2,
+                       label=f'{group}: {sample_name(filename)}')
         else:
-            # Use group colors (blue for case, red for control)
-            # Plot case group (blue shades)
-            for i, (filename, cpg_df) in enumerate(case_data):
-                smoothed_C = gaussian_filter1d(cpg_df['percent_C'], sigma)
-                alpha = 0.6 if len(case_data) > 1 else 1.0
-                ax.plot(cpg_df['POS'], smoothed_C, 
-                       color='blue', linewidth=2, alpha=alpha,
-                       label=f'Case: {filename.split("/")[-1]}')
-            
-            # Plot control group (red shades)
-            for i, (filename, cpg_df) in enumerate(control_data):
-                smoothed_C = gaussian_filter1d(cpg_df['percent_C'], sigma)
-                alpha = 0.6 if len(control_data) > 1 else 1.0
-                ax.plot(cpg_df['POS'], smoothed_C, 
-                       color='red', linewidth=2, alpha=alpha,
-                       label=f'Control: {filename.split("/")[-1]}')
+            # Group colors: one line per sample, one legend entry per group
+            for group, data in (('Case', case_data), ('Control', control_data)):
+                for i, (filename, cpg_df) in enumerate(data):
+                    if len(data) == 1:
+                        label = f'{group}: {sample_name(filename)}'
+                    else:
+                        label = f'{group} (n = {len(data)})' if i == 0 else None
+                    ax.plot(cpg_df['POS'], gaussian_filter1d(cpg_df['percent_C'], sigma),
+                           color=group_colors[group], linewidth=1.0, alpha=0.8, label=label)
+        
+        # CpG sites as tick marks along the x axis
+        cpg_positions = pd.concat([d['POS'] for _, d in case_data + control_data]).unique()
+        ax.plot(cpg_positions, np.full(len(cpg_positions), 1.5), linestyle='none', marker='|',
+               markersize=4, markeredgewidth=0.8, color='0.55', label='CpG site')
         
         # Add SNP analysis if requested (using first file from each group)
         if add_snp_lines:
@@ -247,41 +263,20 @@ def create_methylation_plot(case_files, control_files, output_pdf, add_snp_lines
                 
                 zygosity_results = analyze_snp_zygosity(df, predefined_positions) if default_ref_used else []
                 
-                for i, (rsid, pos, ref, alt, r, a, genotype, p_val) in enumerate(zygosity_results):
+                snp_notes = []
+                for rsid, pos, ref, alt, r, a, genotype, p_val in zygosity_results:
                     print(f"{rsid} ({ref}>{alt}) position {pos}: {genotype}  {ref}={r} {alt}={a}")
                     if isinstance(p_val, float):
-                        if genotype == f"{ref}-{alt}":
-                            color = "green"
-                        elif genotype == f"{alt}-{alt}":
-                            color = "purple"
-                        elif genotype == f"{ref}-{ref}":
-                            color = "orange"
-                        else:
-                            color = "gray"
-                        
-                        ax.axvline(x=pos, color=color, linestyle='--', 
-                                 linewidth=1.5, alpha=0.7)
-                        
-                        label = f"{rsid} ({ref}>{alt})\n{genotype}\nPosition: {pos}\np = {p_val:.3g}"
-                        ax.annotate(label,
-                            xy=(pos, 0), xycoords='data',
-                            # alternate sides so nearby SNP labels don't overlap
-                            xytext=(-6 if i % 2 == 0 else 6, -70), textcoords='offset points',
-                            ha='right' if i % 2 == 0 else 'left', va='top', multialignment='left',
-                            fontsize=9, color=color,
-                            bbox=dict(facecolor='white', edgecolor=color,
-                                    boxstyle='round,pad=0.3'))
-
-                # Key explaining how to read the SNP calls
-                if zygosity_results:
-                    key = ("p: REF vs ALT reads tested against 50:50\n"
-                           "p < 0.05 homozygous   p ≥ 0.05 heterozygous\n"
-                           "Green het   Orange hom REF   Purple hom ALT")
-                    fig.text(0.98, 0.02, key, ha='right', va='bottom', multialignment='left', fontsize=8,
-                             family='monospace', color='dimgray',
-                             bbox=dict(facecolor='white', edgecolor='lightgray',
-                                       boxstyle='round,pad=0.5'))
-
+                        ax.axvline(x=pos, color='0.45', linestyle='--', linewidth=0.8, zorder=0)
+                        ax.text(pos, 1.01, f"{rsid}\n{genotype}", transform=ax.get_xaxis_transform(),
+                               ha='center', va='bottom', fontsize=7)
+                        snp_notes.append(f"{rsid} {genotype} (P = {p_val:.2g})")
+                    else:
+                        snp_notes.append(f"{rsid} {genotype.lower()}")
+                if snp_notes:
+                    notes.append(f"Genotypes ({sample_name(first_file)}): " + ", ".join(snp_notes)
+                                 + "; P < 0.05 means homozygous")
+        
         # Differential methylation: case vs control
         if case_data and control_data:
             stats_df, region = differential_methylation(case_data, control_data)
@@ -292,25 +287,25 @@ def create_methylation_plot(case_files, control_files, output_pdf, add_snp_lines
                       f"{region['delta']:+.1f}%, p = {region['p_value']:.3g}, "
                       f"{region['n_sig']} of {region['n_tested']} CpGs FDR < 0.05")
                 print(f"Per-CpG statistics saved to {stats_csv}")
-
+                
                 # Mark significant CpGs
                 sig = stats_df[stats_df['fdr'] < 0.05]
-                ax.scatter(sig['POS'], [95] * len(sig), marker='*', s=60, color='black', zorder=5)
-
-                summary = (f"Case vs Control: {region['test']}, n = {region['n_case']} vs {region['n_control']}\n"
-                           f"Mean difference {region['delta']:+.1f}%, p = {region['p_value']:.3g}\n"
-                           f"* CpG FDR < 0.05: {region['n_sig']} of {region['n_tested']}")
-                fig.text(0.02, 0.02, summary, ha='left', va='bottom', fontsize=8,
-                         family='monospace', color='dimgray',
-                         bbox=dict(facecolor='white', edgecolor='lightgray',
-                                   boxstyle='round,pad=0.5'))
-
-        ax.set_xlabel('Position', fontsize=12)
-        ax.set_ylabel('Percent Methylation', fontsize=12)
-        ax.set_title('CpG Methylation: Case vs Control', fontsize=14, fontweight='bold')
-        ax.set_ylim(-10, 100)
-        ax.grid(True, linestyle='--', alpha=0.3)
-        ax.legend(loc='best', fontsize=9)
+                for pos in sig['POS']:
+                    ax.text(pos, 94, '*', ha='center', va='center', fontsize=12, fontweight='bold')
+                
+                test = 't-test' if region['test'] == 'Welch t-test' else "Fisher's exact on reads"
+                notes.insert(0, f"* Significant CpG (FDR < 0.05): {region['n_sig']} of {region['n_tested']}. "
+                                f"Overall, case is {region['delta']:+.1f}% vs control "
+                                f"(P = {region['p_value']:.2g}, {test}, n = {region['n_case']} vs {region['n_control']})")
+        
+        ax.set_xlabel('Position in amplicon (bp)')
+        ax.set_ylabel('CpG methylation (%)')
+        ax.set_ylim(0, 100)
+        ax.set_xlim(left=0)
+        ax.legend(bbox_to_anchor=(1.01, 1), loc='upper left')
+        if notes:
+            ax.text(0, -0.24, '\n'.join(notes), transform=ax.transAxes, ha='left', va='top',
+                   fontsize=6.5, color='0.25', linespacing=1.5)
         
         pdf.savefig(fig, bbox_inches='tight')
         plt.close(fig)
