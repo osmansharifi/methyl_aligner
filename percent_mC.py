@@ -46,21 +46,34 @@ def parse_arguments():
 Examples:
   python3 percent_mC.py output.pdf --case file1.csv file2.csv --control file3.csv file4.csv
   python3 percent_mC.py output.pdf --case file1.csv --control file2.csv -snp
+  python3 percent_mC.py output.pdf --sample file1.csv -snp
         """
     )
     
     parser.add_argument('output_pdf', help='Output PDF file for the plot')
-    parser.add_argument('--case', nargs='+', required=True,
-                       help='Input CSV files for case group')
-    parser.add_argument('--control', nargs='+', required=True,
-                       help='Input CSV files for control group')
+    parser.add_argument('--case', nargs='+',
+                       help='Input CSV files for case group (differential methylation needs --case and --control)')
+    parser.add_argument('--control', nargs='+',
+                       help='Input CSV files for control group (differential methylation needs --case and --control)')
+    parser.add_argument('--sample',
+                       help='A single CSV file for SNP calling with -snp, no case or control needed')
     parser.add_argument('-snp', action='store_true', 
                        help='Add vertical lines at rs4823981 (G>T, 238) and rs4823982 (G>A, 333) with zygosity analysis '
                             '(default NHIP_pro_forward_HY reference only)')
     parser.add_argument('--color', action='store_true',
                        help='Use different colors for each file instead of grouping by case/control')
     
-    return parser.parse_args()
+    args = parser.parse_args()
+    
+    if args.sample:
+        if args.case or args.control:
+            parser.error('use --sample on its own, or --case and --control for differential methylation')
+        if not args.snp:
+            parser.error('--sample is for SNP calling, so add -snp')
+    elif not (args.case and args.control):
+        parser.error('differential methylation needs both --case and --control (or use --sample FILE -snp for one sample)')
+    
+    return args
 
 def process_csv_file(input_csv):
     """Process a single CSV file and return CpG data"""
@@ -181,7 +194,7 @@ def differential_methylation(case_data, control_data, min_cov=10):
               'n_sig': int((stats_df['fdr'] < 0.05).sum()), 'n_tested': len(stats_df)}
     return stats_df, region
 
-def create_methylation_plot(case_files, control_files, output_pdf, add_snp_lines=False, use_colors=False):
+def create_methylation_plot(case_files, control_files, output_pdf, add_snp_lines=False, use_colors=False, sample_mode=False):
     """Create combined methylation plot for all files"""
     predefined_positions = [('rs4823981', 238, 'G', 'T'), ('rs4823982', 333, 'G', 'A')]
     
@@ -215,14 +228,15 @@ def create_methylation_plot(case_files, control_files, output_pdf, add_snp_lines
         # Okabe-Ito colorblind-safe palette, used in this fixed order for --color mode
         color_palette = ['#0072B2', '#D55E00', '#009E73', '#CC79A7',
                         '#E69F00', '#56B4E9', '#000000']
-        group_colors = {'Case': '#D55E00', 'Control': '#0072B2'}
+        group_colors = {'Case': '#D55E00', 'Control': '#0072B2', 'Sample': '#000000'}
+        case_label = 'Sample' if sample_mode else 'Case'  # --sample runs use the case slot
         
         def sample_name(f):
             return f.split("/")[-1].rsplit(".", 1)[0]
         
         if use_colors:
             # Use different color for each file
-            all_files = [(f, cpg_df, 'Case') for f, cpg_df in case_data] + \
+            all_files = [(f, cpg_df, case_label) for f, cpg_df in case_data] + \
                        [(f, cpg_df, 'Control') for f, cpg_df in control_data]
             
             for i, (filename, cpg_df, group) in enumerate(all_files):
@@ -232,7 +246,7 @@ def create_methylation_plot(case_files, control_files, output_pdf, add_snp_lines
                        label=f'{group}: {sample_name(filename)}')
         else:
             # Group colors: one line per sample, one legend entry per group
-            for group, data in (('Case', case_data), ('Control', control_data)):
+            for group, data in ((case_label, case_data), ('Control', control_data)):
                 for i, (filename, cpg_df) in enumerate(data):
                     if len(data) == 1:
                         label = f'{group}: {sample_name(filename)}'
@@ -316,11 +330,12 @@ def main():
     args = parse_arguments()
     
     create_methylation_plot(
-        case_files=args.case,
-        control_files=args.control,
+        case_files=[args.sample] if args.sample else args.case,
+        control_files=[] if args.sample else args.control,
         output_pdf=args.output_pdf,
         add_snp_lines=args.snp,
-        use_colors=args.color
+        use_colors=args.color,
+        sample_mode=bool(args.sample)
     )
 
 if __name__ == "__main__":

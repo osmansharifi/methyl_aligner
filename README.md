@@ -63,12 +63,14 @@ arguments.
 usage: 
 python3 percent_mC.py output.pdf --case file1.csv file2.csv --control file3.csv file4.csv
 python3 percent_mC.py output.pdf --case file1.csv --control file2.csv -snp
+python3 percent_mC.py output.pdf --sample file1.csv -snp
 
 option:
 -snp		genotypes rs4823981 (G>T, pos 238) and rs4823982 (G>A, pos 333)
 		(default NHIP_pro_forward_HY reference only)
 --case		groups your experimental csvs
 --control	groups your control csvs
+--sample	a single csv for SNP calling with -snp (no case or control needed)
 --color		colors each sample uniquely
 ```
 
