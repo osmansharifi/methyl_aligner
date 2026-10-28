@@ -85,7 +85,7 @@ Examples:
   # One or more samples: methylation figure and SNP genotypes for each
   python3 methyl_aligner.py run --sample sample1.fastq sample2.fastq
 
-  # Case vs control: figure and differential methylation statistics
+  # Case vs control: differential methylation, plus SNP genotypes for every sample
   python3 methyl_aligner.py run --case case1.fastq case2.fastq --control ctrl1.fastq ctrl2.fastq
 
   # Two steps instead: align once, then re-plot any time without realigning
@@ -126,7 +126,8 @@ def parse_arguments(argv=None):
                                help='one or more samples: a methylation figure and SNP genotypes '
                                     '(rs4823981, rs4823982) for each')
             group.add_argument('--case', nargs='+', metavar=samples,
-                               help='case group, compared with --control for differential methylation')
+                               help='case group, compared with --control for differential methylation; '
+                                    'each sample also gets its own SNP genotypes')
             group.add_argument('--control', nargs='+', metavar=samples,
                                help='control group, compared with --case')
         else:
@@ -144,7 +145,8 @@ def parse_arguments(argv=None):
         if figures:
             group.add_argument('-o', '--name',
                                help='name of the analysis folder (default: the sample name for --sample, '
-                                    'case_vs_control for --case/--control)')
+                                    'case_vs_control for --case/--control; per sample SNP folders '
+                                    'always use the sample name)')
             group.add_argument('--color', action='store_true',
                                help='give each case and control sample its own color')
         group.add_argument('--outdir', default='results', metavar='DIR',
@@ -586,6 +588,8 @@ def main(argv=None):
     else:
         folders = [make_analysis(args, args.name or 'case_vs_control',
                                  [('Case', args.case), ('Control', args.control)])]
+        # Every case and control sample also gets its own SNP genotypes
+        folders += [make_analysis(args, sample_name(f), [('Sample', [f])]) for f in args.case + args.control]
     print("\nDone. Results are in:")
     for folder in folders:
         print(f"  {folder}/")

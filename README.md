@@ -42,7 +42,8 @@ Everything starts from your FASTQ files (plain or gzipped) and one command,
 python3 methyl_aligner.py run --sample sample1.fastq sample2.fastq
 ```
 
-**Is methylation different between two groups?**
+**Is methylation different between two groups?** (each sample also gets its
+own SNP genotypes)
 
 ```
 python3 methyl_aligner.py run --case case1.fastq case2.fastq case3.fastq \
@@ -85,8 +86,8 @@ at positions 118 and 160.
 ```
 samples (run and plot; use --sample, or --case and --control)
   --sample FILE ...     one or more samples: a figure and SNP genotypes for each
-  --case FILE ...       case group      } compared for differential methylation
-  --control FILE ...    control group   }
+  --case FILE ...       case group      } compared for differential methylation,
+  --control FILE ...    control group   } plus SNP genotypes for each sample
 
 alignment options (run and align)
   -r FASTA              custom reference (default: built-in NHIP_pro_forward_HY)
@@ -115,7 +116,7 @@ results/
 │       ├── sample1_line_plot_all_data.pdf  nucleotide counts, all positions
 │       └── sample1_line_plot_cpg_only.pdf  nucleotide counts, CpG sites only
 └── analyses/
-    ├── sample1/                            from --sample
+    ├── sample1/                            one per sample (--sample, --case, --control)
     │   ├── sample1.pdf                     methylation figure with SNP genotypes
     │   ├── sample1_snp_genotypes.csv       SNP calls with read counts and P values
     │   └── sample1_summary.txt             command, inputs, settings, results
@@ -156,8 +157,9 @@ the 50:50 split expected for a heterozygote (binomial test). P < 0.05 means the
 reads are too uneven for a heterozygote, so the site is called homozygous for
 the allele with more reads; P >= 0.05 is called heterozygous. Sites with fewer
 than 10 REF + ALT reads are not called. Genotypes can differ between samples,
-so each sample is genotyped on its own, and case vs control figures do not
-show SNPs.
+so each sample is genotyped on its own: with `--case` and `--control`, every
+sample also gets its own SNP folder, and the case vs control figure itself does
+not show SNPs.
 
 **Differential methylation** (`--case` and `--control`). Every CpG with at
 least 10 C + T reads in each sample is tested, along with the whole amplicon
