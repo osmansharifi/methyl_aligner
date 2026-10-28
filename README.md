@@ -72,6 +72,20 @@ option:
 --color		colors each sample uniquely
 ```
 
+### Differential methylation ###
+
+`percent_mC.py` tests case vs control at every CpG with at least 10 C + T reads
+in each sample, and across the whole amplicon (mean methylation of all tested
+CpGs). Results are printed, summarized on the plot, and saved per CpG to
+`<output>_differential_methylation.csv` (case %, control %, difference, p value,
+Benjamini-Hochberg FDR). CpGs with FDR < 0.05 are marked with a star on the plot.
+
+* 2 or more files per group: Welch t-test on per-sample percent methylation.
+  Samples are the unit of replication, so PCR duplicates do not inflate p values.
+* 1 file in either group: Fisher's exact test on pooled C and T reads. This
+  treats reads as independent and ignores sample-to-sample variation, so treat
+  results as exploratory and use biological replicates for real comparisons.
+
 Notes:
 
 (1) By default, alignment is performed with a +1/-1 scoring matrix. in "methyl

@@ -3,9 +3,10 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import argparse
+import warnings
 from scipy.ndimage import gaussian_filter1d
 from matplotlib.backends.backend_pdf import PdfPages
-from scipy.stats import binomtest
+from scipy.stats import binomtest, ttest_ind, fisher_exact
 # Default reference: NHIP_pro_forward_HY (801 bp); SNP positions are coordinates on it only
 DEFAULT_REFERENCE_SEQ = (
     "GCAGACTCTGGAGAAGCCCAGGAGCGCGTGTCCCCGCCGGCCCCGCTCAGCCTGACCTGCTTTTCCCCAC"
@@ -97,6 +98,73 @@ def analyze_snp_zygosity(df, positions):
             zygosity_results.append((rsid, pos, ref, alt, 0, 0, "Not found", None))
     
     return zygosity_results
+
+def differential_methylation(case_data, control_data, min_cov=10):
+    """Test case vs control methylation at each CpG and across the whole region.
+
+    With 2 or more samples per group, a Welch t-test on per-sample percent methylation
+    (samples are the unit, so PCR duplicates do not inflate p values). With 1 sample in
+    either group, Fisher's exact test on pooled C and T read counts.
+    Per-CpG p values are Benjamini-Hochberg corrected.
+    """
+    def counts(data):
+        # one row per CpG, C and T counts for each sample; CpGs below min_cov set to missing
+        C = pd.concat([d.set_index('POS')['C'] for _, d in data], axis=1, keys=range(len(data)))
+        T = pd.concat([d.set_index('POS')['T'] for _, d in data], axis=1, keys=range(len(data)))
+        low = (C + T) < min_cov
+        return C.mask(low), T.mask(low)
+
+    case_C, case_T = counts(case_data)
+    ctrl_C, ctrl_T = counts(control_data)
+    case_pct = case_C / (case_C + case_T) * 100
+    ctrl_pct = ctrl_C / (ctrl_C + ctrl_T) * 100
+    replicates = len(case_data) >= 2 and len(control_data) >= 2
+    test = 'Welch t-test' if replicates else "Fisher's exact (reads, no replicates)"
+
+    rows = []
+    for pos in case_pct.index.intersection(ctrl_pct.index):
+        a, b = case_pct.loc[pos].dropna(), ctrl_pct.loc[pos].dropna()
+        if replicates:
+            if len(a) < 2 or len(b) < 2:
+                continue
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', RuntimeWarning)  # identical values at a CpG
+                p_val = ttest_ind(a, b, equal_var=False).pvalue
+        else:
+            if len(a) == 0 or len(b) == 0:
+                continue
+            table = [[case_C.loc[pos].sum(), case_T.loc[pos].sum()],
+                     [ctrl_C.loc[pos].sum(), ctrl_T.loc[pos].sum()]]
+            p_val = fisher_exact(table).pvalue
+        p_val = 1.0 if np.isnan(p_val) else p_val  # no variance in either group
+        rows.append((pos, a.mean(), b.mean(), a.mean() - b.mean(), p_val))
+
+    stats_df = pd.DataFrame(rows, columns=['POS', 'case_pct', 'control_pct', 'delta', 'p_value'])
+    if stats_df.empty:
+        return stats_df, None
+
+    # Benjamini-Hochberg FDR
+    p = stats_df['p_value'].values
+    order = np.argsort(p)
+    ranked = p[order] * len(p) / np.arange(1, len(p) + 1)
+    fdr = np.empty(len(p))
+    fdr[order] = np.minimum(1, np.minimum.accumulate(ranked[::-1])[::-1])
+    stats_df['fdr'] = fdr
+
+    # Whole region: mean methylation across tested CpGs
+    tested = stats_df['POS']
+    case_region = case_pct.loc[tested].mean()
+    ctrl_region = ctrl_pct.loc[tested].mean()
+    if replicates:
+        region_p = ttest_ind(case_region, ctrl_region, equal_var=False).pvalue
+    else:
+        region_p = fisher_exact([[case_C.loc[tested].sum().sum(), case_T.loc[tested].sum().sum()],
+                                 [ctrl_C.loc[tested].sum().sum(), ctrl_T.loc[tested].sum().sum()]]).pvalue
+    region_p = 1.0 if np.isnan(region_p) else region_p
+    region = {'test': test, 'n_case': len(case_data), 'n_control': len(control_data),
+              'delta': case_region.mean() - ctrl_region.mean(), 'p_value': region_p,
+              'n_sig': int((stats_df['fdr'] < 0.05).sum()), 'n_tested': len(stats_df)}
+    return stats_df, region
 
 def create_methylation_plot(case_files, control_files, output_pdf, add_snp_lines=False, use_colors=False):
     """Create combined methylation plot for all files"""
@@ -213,6 +281,29 @@ def create_methylation_plot(case_files, control_files, output_pdf, add_snp_lines
                              family='monospace', color='dimgray',
                              bbox=dict(facecolor='white', edgecolor='lightgray',
                                        boxstyle='round,pad=0.5'))
+
+        # Differential methylation: case vs control
+        if case_data and control_data:
+            stats_df, region = differential_methylation(case_data, control_data)
+            if region:
+                stats_csv = output_pdf.rsplit('.', 1)[0] + '_differential_methylation.csv'
+                stats_df.to_csv(stats_csv, index=False)
+                print(f"Differential methylation ({region['test']}): mean difference "
+                      f"{region['delta']:+.1f}%, p = {region['p_value']:.3g}, "
+                      f"{region['n_sig']} of {region['n_tested']} CpGs FDR < 0.05")
+                print(f"Per-CpG statistics saved to {stats_csv}")
+
+                # Mark significant CpGs
+                sig = stats_df[stats_df['fdr'] < 0.05]
+                ax.scatter(sig['POS'], [95] * len(sig), marker='*', s=60, color='black', zorder=5)
+
+                summary = (f"Case vs Control: {region['test']}, n = {region['n_case']} vs {region['n_control']}\n"
+                           f"Mean difference {region['delta']:+.1f}%, p = {region['p_value']:.3g}\n"
+                           f"* CpG FDR < 0.05: {region['n_sig']} of {region['n_tested']}")
+                fig.text(0.02, 0.02, summary, ha='left', va='bottom', fontsize=8,
+                         family='monospace', color='dimgray',
+                         bbox=dict(facecolor='white', edgecolor='lightgray',
+                                   boxstyle='round,pad=0.5'))
 
         ax.set_xlabel('Position', fontsize=12)
         ax.set_ylabel('Percent Methylation', fontsize=12)
