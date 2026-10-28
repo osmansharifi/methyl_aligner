@@ -3,9 +3,9 @@
 SNP genotyping and case vs control differential methylation.
 
 Commands:
-  align   align FASTQ reads to the reference and save per sample count matrices
-  plot    plot CpG methylation from matrix CSVs, call SNPs, test case vs control
-  run     align FASTQs and plot them in one step
+  run     start here: align FASTQ files and make the figures in one step
+  align   align FASTQ files only (step 1 of 2)
+  plot    make the figures from aligned samples (step 2 of 2)
 
 Run "python3 methyl_aligner.py <command> -h" for the options of each command.
 """
@@ -16,6 +16,7 @@ import gzip
 import os
 import sys
 import subprocess
+import tempfile
 import shlex
 import shutil
 import threading
@@ -60,7 +61,7 @@ DEFAULT_REFERENCE_SEQ = (
     "ATGGTTTATAATCAGAAGAGAAGCAGTGAGA"
 )
 
-# SNPs genotyped with -snp: (rsID, position on NHIP_pro_forward_HY, REF, ALT)
+# SNPs genotyped for each --sample: (rsID, position on NHIP_pro_forward_HY, REF, ALT)
 SNP_POSITIONS = [('rs4823981', 238, 'G', 'T'), ('rs4823982', 333, 'G', 'A')]
 
 #######################
@@ -69,124 +70,139 @@ SNP_POSITIONS = [('rs4823981', 238, 'G', 'T'), ('rs4823982', 333, 'G', 'A')]
 
 EXAMPLES = """
 Examples:
-  # Do everything in one step
-  python3 methyl_aligner.py run --sample sample1.fq -snp -o sample1_snps
-  python3 methyl_aligner.py run --case case1.fq case2.fq --control ctrl1.fq ctrl2.fq -o case_vs_control
+  # One or more samples: methylation figure and SNP genotypes for each
+  python3 methyl_aligner.py run --sample sample1.fastq sample2.fastq
 
-  # Or align first, then plot (re-plot any time without realigning)
-  python3 methyl_aligner.py align case1.fq case2.fq ctrl1.fq ctrl2.fq
-  python3 methyl_aligner.py plot case_vs_control \\
-      --case results/samples/case1/case1_matrix.csv results/samples/case2/case2_matrix.csv \\
-      --control results/samples/ctrl1/ctrl1_matrix.csv results/samples/ctrl2/ctrl2_matrix.csv
+  # Case vs control: figure and differential methylation statistics
+  python3 methyl_aligner.py run --case case1.fastq case2.fastq --control ctrl1.fastq ctrl2.fastq
+
+  # Two steps instead: align once, then re-plot any time without realigning
+  python3 methyl_aligner.py align case1.fastq case2.fastq ctrl1.fastq ctrl2.fastq
+  python3 methyl_aligner.py plot --case results/samples/case1/case1_matrix.csv results/samples/case2/case2_matrix.csv \\
+                                 --control results/samples/ctrl1/ctrl1_matrix.csv results/samples/ctrl2/ctrl2_matrix.csv
 
 Outputs:
-  results/samples/<sample>/   count matrices, nucleotide plots, reference used
-  results/analyses/<name>/    figure, SNP genotypes, differential methylation, summary.txt
+  results/samples/<sample>/   count matrices and nucleotide count plots
+  results/analyses/<name>/    figure, SNP genotypes or statistics, summary.txt
 """
+
+class FriendlyParser(argparse.ArgumentParser):
+    """Argument parser whose errors say what went wrong and where to get help."""
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        sys.stderr.write(f"\nError: {message}\nFor help: python3 {self.prog} -h\n")
+        sys.exit(2)
 
 def parse_arguments(argv=None):
     """Parse and return all command line arguments."""
     argv = sys.argv[1:] if argv is None else list(argv)
-    # Older usage "methyl_aligner.py [options] sample.fq" still works: treat it as "align"
-    if argv and argv[0] not in ('align', 'plot', 'run', '-h', '--help'):
-        argv = ['align'] + argv
-    
-    parser = argparse.ArgumentParser(
+    parser = FriendlyParser(
         prog='methyl_aligner.py',
-        description='Bisulfite amplicon alignment, CpG methylation plots, SNP genotyping '
-                    'and case vs control differential methylation.',
+        description='Bisulfite amplicon long read alignment, CpG methylation figures, '
+                    'SNP genotyping and case vs control differential methylation.',
         formatter_class=argparse.RawDescriptionHelpFormatter, epilog=EXAMPLES)
-    commands = parser.add_subparsers(dest='command', metavar='command')
-    commands.required = True
+    commands = parser.add_subparsers(dest='command', metavar='command', title='commands')
     
-    # Alignment options (shared by align and run)
-    align_options = argparse.ArgumentParser(add_help=False)
-    group = align_options.add_argument_group('alignment options')
-    group.add_argument('-r', '--reference', dest='fasta',
-                       help='Custom reference FASTA (default: built-in NHIP_pro_forward_HY). '
-                            'Use at your own risk: SNP calling does not apply to a custom reference.')
-    group.add_argument('-p', '--percent', type=int, default=70,
-                       help='Percent identity minimum (default: 70)')
-    group.add_argument('-t', '--threads', type=int, default=4,
-                       help='Number of threads (default: 4)')
-    group.add_argument('-w', '--wrap', type=int, default=50,
-                       help='Line width of the alignment files kept with -d (default: 50)')
-    group.add_argument('-d', '--tempdir',
-                       help='Create and keep a named working directory for temp files')
-    group.add_argument('-f', '--force', action='store_true',
-                       help='Force rewrite over named working directory')
-    group.add_argument('-m', '--methyl', action='store_true', default=True,
-                       help='Bisulfite (methyl) mode: C:T counts as a match and percent identity '
-                            'uses only A and G (default: on)')
-    group.add_argument('--no-methyl', dest='methyl', action='store_false',
-                       help='Standard mode for unconverted DNA: plain +1/-1 scoring')
-    group.add_argument('--outdir', default='results',
-                       help='Folder for all results (default: results)')
+    def add_alignment_options(p):
+        group = p.add_argument_group('alignment options')
+        group.add_argument('-r', '--reference', dest='fasta', metavar='FASTA',
+                           help='custom reference (default: built-in NHIP_pro_forward_HY). '
+                                'At your own risk: SNP genotyping is skipped for a custom reference.')
+        group.add_argument('-p', '--percent', type=int, default=70, metavar='N',
+                           help='minimum percent identity to keep a read (default: 70)')
+        group.add_argument('-t', '--threads', type=int, default=4, metavar='N',
+                           help='number of threads (default: 4)')
     
-    # Plot options (shared by plot and run)
-    plot_options = argparse.ArgumentParser(add_help=False)
-    group = plot_options.add_argument_group('plot options')
-    group.add_argument('-snp', '--snp', dest='snp', action='store_true',
-                       help='Genotype rs4823981 (G>T, 238) and rs4823982 (G>A, 333) '
-                            '(default NHIP_pro_forward_HY reference only)')
-    group.add_argument('--color', action='store_true',
-                       help='Use a different color for each file instead of grouping by case/control')
+    def add_sample_options(p, kind):
+        group = p.add_argument_group('samples (use --sample, or --case and --control)')
+        group.add_argument('--sample', nargs='+', metavar=kind,
+                           help='one or more samples: a methylation figure and SNP genotypes '
+                                '(rs4823981, rs4823982) for each')
+        group.add_argument('--case', nargs='+', metavar=kind,
+                           help='case group, compared with --control for differential methylation')
+        group.add_argument('--control', nargs='+', metavar=kind,
+                           help='control group, compared with --case')
     
-    # align
-    p = commands.add_parser('align', parents=[align_options],
-                            help='Align FASTQ reads and save per sample count matrices and plots',
-                            description='Align bisulfite FASTQ reads (.fq, .fastq, or gzipped) to the reference. '
-                                        'Writes <outdir>/<sample>/<sample>_matrix.csv plus nucleotide count plots.')
-    p.add_argument('fastq', nargs='+', help='One or more FASTQ files')
+    def add_output_options(p, figures=True):
+        group = p.add_argument_group('output options')
+        if figures:
+            group.add_argument('-o', '--name',
+                               help='name of the analysis folder (default: the sample name for --sample, '
+                                    'case_vs_control for --case/--control)')
+            group.add_argument('--color', action='store_true',
+                               help='give each case and control sample its own color')
+        group.add_argument('--outdir', default='results', metavar='DIR',
+                           help='folder for all results (default: results)')
     
-    # plot
-    p = commands.add_parser('plot', parents=[plot_options],
-                            help='Plot CpG methylation, call SNPs, test case vs control',
-                            description='Plot CpG methylation from matrix CSVs made by "align". '
-                                        'Use --sample FILE -snp for one sample, or --case and --control '
-                                        'for differential methylation.',
+    subparsers = {}
+    p = commands.add_parser('run', help='start here: align FASTQ files and make the figures in one step',
+                            description='Align FASTQ files, then make the figures. Use --sample for SNP '
+                                        'genotypes, or --case and --control for differential methylation.',
                             formatter_class=argparse.RawDescriptionHelpFormatter, epilog=EXAMPLES)
-    p.add_argument('output_pdf', metavar='name',
-                   help='Name for this analysis, for example case_vs_control. Outputs go to '
-                        'results/analyses/<name>/. A path with a folder, like figs/out.pdf, is used as given.')
-    p.add_argument('--outdir', default='results', help='Folder for all results (default: results)')
-    p.add_argument('--case', nargs='+', help='Matrix CSV files for the case group')
-    p.add_argument('--control', nargs='+', help='Matrix CSV files for the control group')
-    p.add_argument('--sample', help='A single matrix CSV for SNP calling with -snp')
+    add_sample_options(p, 'FASTQ')
+    add_alignment_options(p)
+    add_output_options(p)
+    subparsers['run'] = p
     
-    # run
-    p = commands.add_parser('run', parents=[align_options, plot_options],
-                            help='Align FASTQs and plot them in one step',
-                            description='Align FASTQ files, then plot them. Use --sample FILE -snp for '
-                                        'one sample, or --case and --control for differential methylation.',
+    p = commands.add_parser('align', help='align FASTQ files only (step 1 of 2)',
+                            description='Align FASTQ files (.fastq, .fq, or gzipped) to the reference. '
+                                        'Writes results/samples/<sample>/ for each file.',
                             formatter_class=argparse.RawDescriptionHelpFormatter, epilog=EXAMPLES)
-    p.add_argument('--case', nargs='+', help='FASTQ files for the case group')
-    p.add_argument('--control', nargs='+', help='FASTQ files for the control group')
-    p.add_argument('--sample', help='A single FASTQ for SNP calling with -snp')
-    p.add_argument('-o', '--output', dest='output_pdf', default='methylation_plot', metavar='name',
-                   help='Name for this analysis (default: methylation_plot). Outputs go to '
-                        'results/analyses/<name>/')
+    p.add_argument('fastq', nargs='+', metavar='FASTQ', help='one or more FASTQ files')
+    add_alignment_options(p)
+    add_output_options(p, figures=False)
+    subparsers['align'] = p
     
+    p = commands.add_parser('plot', help='make the figures from aligned samples (step 2 of 2)',
+                            description='Make figures from the matrix CSVs that "align" wrote to '
+                                        'results/samples/. Use --sample for SNP genotypes, or --case '
+                                        'and --control for differential methylation.',
+                            formatter_class=argparse.RawDescriptionHelpFormatter, epilog=EXAMPLES)
+    add_sample_options(p, 'CSV')
+    add_output_options(p)
+    subparsers['plot'] = p
+    
+    if not argv:
+        parser.print_help()
+        sys.exit(0)
+    if '-snp' in argv or '--snp' in argv:
+        argv = [a for a in argv if a not in ('-snp', '--snp')]
+        sys.stderr.write("Note: -snp is no longer needed; --sample always genotypes the SNPs.\n")
     args = parser.parse_args(argv)
+    if args.command is None:
+        parser.print_help()
+        sys.exit(0)
+    p = subparsers[args.command]
     
-    # Check sample groups and that input files exist
-    if args.command in ('plot', 'run'):
-        if args.sample:
-            if args.case or args.control:
-                parser.error('use --sample on its own, or --case and --control for differential methylation')
-            if not args.snp:
-                parser.error('--sample is for SNP calling, so add -snp')
-        elif not (args.case and args.control):
-            parser.error('differential methylation needs both --case and --control '
-                         '(or use --sample FILE -snp for one sample)')
-        inputs = [args.sample] if args.sample else args.case + args.control
-    else:
+    # Check the sample groups
+    if args.command == 'align':
         inputs = args.fastq
-    if getattr(args, 'fasta', None):
-        inputs = inputs + [args.fasta]
+    else:
+        if args.sample and (args.case or args.control):
+            p.error('use --sample, or --case with --control, but not both')
+        if not args.sample and not (args.case and args.control):
+            if args.case or args.control:
+                p.error('differential methylation needs both --case and --control')
+            p.error('tell me which samples to use: --sample FILE [FILE ...], or --case ... --control ...')
+        if args.sample and args.name and len(args.sample) > 1:
+            p.error('-o names a single analysis; with several --sample files each one is named after its sample')
+        inputs = (args.sample or []) + (args.case or []) + (args.control or [])
+    
+    # Check the files: they must exist and be the right kind for the command
     missing = [f for f in inputs if not os.path.isfile(f)]
     if missing:
-        parser.error('file not found: ' + ', '.join(missing))
+        p.error('file not found: ' + ', '.join(missing))
+    if args.command == 'plot':
+        fastqs = [f for f in inputs if not f.lower().endswith('.csv')]
+        if fastqs:
+            p.error('plot takes the matrix CSVs made by align (results/samples/<sample>/<sample>_matrix.csv). '
+                    'To start from FASTQ files, use run instead.')
+    else:
+        csvs = [f for f in inputs if f.lower().endswith('.csv')]
+        if csvs:
+            p.error(f'{args.command} takes FASTQ files. To use matrix CSVs from an earlier run, use plot instead.')
+    if getattr(args, 'fasta', None) and not os.path.isfile(args.fasta):
+        p.error(f'reference not found: {args.fasta}')
     
     return args
 
@@ -209,7 +225,7 @@ def anti(seq):
     complement = {'A': 'T', 'C': 'G', 'G': 'C', 'T': 'A', 'N': 'N'}
     return ''.join([complement[nt] for nt in seq[::-1]])
 
-def run_needle(ref_file, seq, strand, wdir, tid, methyl_mode, mat_file, wrap=50):
+def run_needle(ref_file, seq, strand, wdir, tid, mat_file):
     """Run needle alignment and return alignment results."""
     fasta = f"{wdir}/{tid}.{strand}.fa"
     out = f"{wdir}/{tid}.{strand}.fa.out"
@@ -225,7 +241,6 @@ def run_needle(ref_file, seq, strand, wdir, tid, methyl_mode, mat_file, wrap=50)
         "-gapextend", "1",
         "-datafile", mat_file,
         "-endweight",
-        "-awidth3", str(wrap),
         "-outfile", out
     ]
     
@@ -247,23 +262,19 @@ def run_needle(ref_file, seq, strand, wdir, tid, methyl_mode, mat_file, wrap=50)
                 elif parts[0] == 's':
                     sa += parts[2]
     
+    # Percent identity from A and G only: bisulfite conversion changes C to T
     match, total = 0, 0
     for r, s in zip(ra, sa):
         if r == '-' or s == '-':
             continue
-        if methyl_mode:
-            if r in ['A', 'G']:
-                if r == s:
-                    match += 1
-                total += 1
-        else:
+        if r in ['A', 'G']:
             if r == s:
                 match += 1
             total += 1
     
     return {'ref': ra, 'seq': sa, 'pct': match/total if total > 0 else 0}
 
-def align_worker(q, results, ref_file, wdir, methyl_mode, mat_file, wrap=50):
+def align_worker(q, results, ref_file, wdir, mat_file):
     """Worker function for alignment threads."""
     tid = threading.get_ident()
     alignments = []
@@ -274,8 +285,8 @@ def align_worker(q, results, ref_file, wdir, methyl_mode, mat_file, wrap=50):
             break
         
         anti_seq = anti(plus)
-        a1 = run_needle(ref_file, plus, f"{tid}+", wdir, tid, methyl_mode, mat_file, wrap)
-        a2 = run_needle(ref_file, anti_seq, f"{tid}-", wdir, tid, methyl_mode, mat_file, wrap)
+        a1 = run_needle(ref_file, plus, f"{tid}+", wdir, tid, mat_file)
+        a2 = run_needle(ref_file, anti_seq, f"{tid}-", wdir, tid, mat_file)
         max_align = a1 if a1['pct'] > a2['pct'] else a2
         alignments.append(max_align)
         q.task_done()
@@ -530,7 +541,7 @@ def create_methylation_plot(case_files, control_files, output_pdf, add_snp_lines
                 default_ref_used = ''.join(df.sort_values('POS')['REF'].astype(str)).upper() == DEFAULT_REFERENCE_SEQ
                 if not default_ref_used:
                     print(f"WARNING: {first_file} was not aligned to the default NHIP_pro_forward_HY reference.\n"
-                          f"SNP calling does not apply to a custom reference, so -snp is ignored.")
+                          f"SNP genotyping is skipped for a custom reference.")
                 
                 zygosity_results = analyze_snp_zygosity(df, predefined_positions) if default_ref_used else []
                 
@@ -602,17 +613,8 @@ def create_methylation_plot(case_files, control_files, output_pdf, add_snp_lines
 
 def run_alignment(args):
     """Run the alignment portion of the pipeline."""
-    # Set up working directory
-    if args.tempdir:
-        if os.path.exists(args.tempdir):
-            if not args.force:
-                sys.stderr.write(f"{args.tempdir} already exists, will not overwrite\n")
-                sys.exit(1)
-        wdir = args.tempdir
-    else:
-        wdir = f"temp.{os.getpid()}.methalign"
-    
-    os.makedirs(wdir, exist_ok=True)
+    # Temporary working folder, removed when alignment finishes
+    wdir = tempfile.mkdtemp(prefix='methyl_aligner_')
     
     # Process reference FASTA (built-in NHIP_pro_forward_HY unless -r is given)
     if args.fasta:
@@ -629,7 +631,7 @@ def run_alignment(args):
     if ref_seq.upper() != DEFAULT_REFERENCE_SEQ:
         sys.stderr.write(f"\nWARNING: using a custom reference ({args.fasta}) instead of the default\n"
                          f"NHIP_pro_forward_HY reference. You are proceeding at your own risk.\n"
-                         f"SNP calling (plot -snp) does NOT apply to this reference.\n\n")
+                         f"SNP genotyping is skipped for this reference.\n\n")
 
     # Process FASTQ and check for duplicates
     read_counts = defaultdict(int)
@@ -648,15 +650,7 @@ def run_alignment(args):
     if duplicates:
         sys.stderr.write(f"{duplicates} duplicates found and skipped\n")
     
-    # Create scoring matrix
-    normal_matrix = """    A   C   G   T   N
-A   1  -1  -1  -1   0
-C  -1   1  -1  -1   0
-G  -1  -1   1  -1   0
-T  -1  -1  -1   1   0
-N   0   0   0   0   0
-"""
-    
+    # Create bisulfite scoring matrix: reference C to read T scores as a match
     methyl_matrix = """    A   C   G   T   N
 A   1  -1  -1  -1   0
 C  -1   1  -1   1   0
@@ -666,7 +660,7 @@ N   0   0   0   0   0
 """
     
     with open(f"{wdir}/mat", 'w') as mat:
-        mat.write(methyl_matrix if args.methyl else normal_matrix)
+        mat.write(methyl_matrix)
     
     # Set up threading
     query_queue = Queue()
@@ -679,7 +673,7 @@ N   0   0   0   0   0
     for _ in range(args.threads):
         t = threading.Thread(target=align_worker, args=(query_queue, result_queue, 
                                                f"{wdir}/ref.fa", wdir, 
-                                               args.methyl, f"{wdir}/mat", args.wrap))
+                                               f"{wdir}/mat"))
         t.start()
         workers.append(t)
     
@@ -700,8 +694,7 @@ N   0   0   0   0   0
     
     if not all_alignments:
         sys.stderr.write("no alignments to process\n")
-        if not args.tempdir:
-            shutil.rmtree(wdir)
+        shutil.rmtree(wdir)
         return None, ref_seq
     
     # Process aligned sequences
@@ -729,13 +722,12 @@ N   0   0   0   0   0
     
     df = pd.DataFrame(data)
     
-    # Clean up if using temporary directory
-    if not args.tempdir:
-        shutil.rmtree(wdir)
+    # Clean up the temporary folder
+    shutil.rmtree(wdir)
     
     return df, ref_seq
 
-def run_visualization(df, sample_name, ref_seq, outdir="results"):
+def run_visualization(df, sample_name, outdir="results"):
     """Run the visualization portion of the pipeline."""
     # Create output directory based on sample name
     output_dir = os.path.join(outdir, 'samples', sample_name)
@@ -755,10 +747,6 @@ def run_visualization(df, sample_name, ref_seq, outdir="results"):
     
     create_plot(df_ref_c, f'Nucleotide Counts by Position - {sample_name} (CpG Only)', 
                 f'{output_dir}/{sample_name}_line_plot_cpg_only.pdf', calculate_percentages(df_ref_c))
-    
-    # Save reference sequence
-    with open(f'{output_dir}/{sample_name}_reference.txt', 'w') as f:
-        f.write(ref_seq)
     
     return output_dir
 
@@ -782,13 +770,11 @@ def align_samples(args, fastq_files):
         print(f"\n[{n}/{len(fastq_files)}] Aligning {sample_name}")
         sample_args = argparse.Namespace(**vars(args))
         sample_args.fastq = fastq
-        if args.tempdir and len(fastq_files) > 1:
-            sample_args.tempdir = os.path.join(args.tempdir, sample_name)
-        df, ref_seq = run_alignment(sample_args)
+        df, _ = run_alignment(sample_args)
         if df is None:
             print(f"Skipping {sample_name}: no reads passed the {args.percent}% identity filter")
             continue
-        output_dir = run_visualization(df, sample_name, ref_seq, args.outdir)
+        output_dir = run_visualization(df, sample_name, args.outdir)
         matrices[fastq] = os.path.join(output_dir, f'{sample_name}_matrix.csv')
     return matrices
 
@@ -796,20 +782,12 @@ def command_align(args):
     matrices = align_samples(args, args.fastq)
     if matrices:
         print(f"\nDone. Results for {len(matrices)} sample(s) are in {os.path.join(args.outdir, 'samples')}/")
-        for matrix in matrices.values():
-            print(f"  {matrix}")
-        print("Next: python3 methyl_aligner.py plot <name> --sample <matrix.csv> -snp, "
-              "or --case ... --control ...")
+        print("Next, make the figures with plot, for example:")
+        print("  python3 methyl_aligner.py plot --sample " + " ".join(matrices.values()))
 
-def analysis_pdf_path(output, outdir):
-    """A bare name goes to <outdir>/analyses/<name>/<name>.pdf; a path with a folder is used as given."""
-    if not output.lower().endswith('.pdf'):
-        output += '.pdf'
-    if os.path.dirname(output):
-        pdf = output
-    else:
-        name = output[:-4]
-        pdf = os.path.join(outdir, 'analyses', name, output)
+def analysis_pdf_path(name, outdir):
+    """Figures and tables for an analysis go to <outdir>/analyses/<name>/<name>.pdf and friends."""
+    pdf = os.path.join(outdir, 'analyses', name, f'{name}.pdf')
     os.makedirs(os.path.dirname(pdf), exist_ok=True)
     return pdf
 
@@ -817,17 +795,16 @@ def uses_default_reference(matrix_csv):
     refs = pd.read_csv(matrix_csv, usecols=['POS', 'REF']).sort_values('POS')['REF'].astype(str)
     return ''.join(refs).upper() == DEFAULT_REFERENCE_SEQ
 
-def write_summary(path, args, report, case_files, control_files):
+def write_summary(path, args, report, case_files, control_files, sample_mode):
     """Write a plain text record of the command, inputs and results."""
     lines = [f"methyl_aligner analysis: {display_name(report['files'][0])}",
              f"Date: {datetime.datetime.now():%Y-%m-%d %H:%M}",
              "Command: " + shlex.join([os.path.basename(sys.argv[0])] + sys.argv[1:]), ""]
     if getattr(args, 'percent', None) is not None:
         reference = args.fasta if args.fasta else 'built-in NHIP_pro_forward_HY'
-        mode = 'bisulfite (methyl)' if args.methyl else 'standard'
-        lines += ["Alignment", f"  reference: {reference}", f"  mode: {mode}",
+        lines += ["Alignment", f"  reference: {reference}",
                   f"  percent identity minimum: {args.percent}%", ""]
-    groups = [('Sample', case_files)] if args.sample else [('Case', case_files), ('Control', control_files)]
+    groups = [('Sample', case_files)] if sample_mode else [('Case', case_files), ('Control', control_files)]
     lines.append("Inputs")
     for group, files in groups:
         lines.append(f"  {group} (n = {len(files)})")
@@ -853,34 +830,47 @@ def write_summary(path, args, report, case_files, control_files):
     with open(path, 'w') as fh:
         fh.write('\n'.join(lines) + '\n')
 
-def command_plot(args):
-    case_files = [args.sample] if args.sample else args.case
-    control_files = [] if args.sample else args.control
-    output_pdf = analysis_pdf_path(args.output_pdf, args.outdir)
+def make_analysis(args, name, case_files, control_files, sample_mode):
+    """Make one figure with its tables and summary in results/analyses/<name>/."""
+    print(f"\nAnalysis: {name}")
+    output_pdf = analysis_pdf_path(name, args.outdir)
     report = create_methylation_plot(
         case_files=case_files,
         control_files=control_files,
         output_pdf=output_pdf,
-        add_snp_lines=args.snp,
+        add_snp_lines=sample_mode,
         use_colors=args.color,
-        sample_mode=bool(args.sample)
+        sample_mode=sample_mode
     )
     if report:
         summary = output_pdf.rsplit('.', 1)[0] + '_summary.txt'
-        write_summary(summary, args, report, case_files, control_files)
+        write_summary(summary, args, report, case_files, control_files, sample_mode)
         print(f"Summary saved to {summary}")
-        print(f"\nDone. All outputs for this analysis are in {os.path.dirname(output_pdf)}/")
+        return os.path.dirname(output_pdf)
+    return None
+
+def command_plot(args):
+    if args.sample:
+        folders = [make_analysis(args, args.name or display_name(f), [f], [], sample_mode=True)
+                   for f in args.sample]
+    else:
+        folders = [make_analysis(args, args.name or 'case_vs_control', args.case, args.control,
+                                 sample_mode=False)]
+    folders = [f for f in folders if f]
+    if folders:
+        print("\nDone. Results are in:")
+        for folder in folders:
+            print(f"  {folder}/")
 
 def command_run(args):
-    fastqs = [args.sample] if args.sample else args.case + args.control
+    fastqs = args.sample or (args.case + args.control)
     matrices = align_samples(args, fastqs)
     missing = [f for f in fastqs if f not in matrices]
     if missing:
-        sys.stderr.write("Cannot plot: these samples had no aligned reads: " + ", ".join(missing) + "\n")
+        sys.stderr.write("Cannot make figures: these samples had no aligned reads: " + ", ".join(missing) + "\n")
         sys.exit(1)
-    print("\nPlotting")
     if args.sample:
-        args.sample = matrices[args.sample]
+        args.sample = [matrices[f] for f in args.sample]
     else:
         args.case = [matrices[f] for f in args.case]
         args.control = [matrices[f] for f in args.control]
