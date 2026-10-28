@@ -135,6 +135,7 @@ results/
 
 Example with 3 case and 3 control samples simulated from `test_sample.fq`, where
 cases were made 30 points more methylated at 5 CpGs near positions 116 to 166.
-Stars mark CpGs with FDR < 0.05, and the box at the bottom left gives the test
-used, the whole amplicon difference with its p value, and the number of
-significant CpGs.
+Each line is one sample. An asterisk (*) marks CpGs with FDR < 0.05, and the
+note under the plot gives the number of significant CpGs and the overall case vs
+control difference with its P value. SNP calling (`-snp`) is left off here
+because genotypes can differ between samples.
