@@ -4,7 +4,10 @@ methyl_aligner aligns bisulfite-converted long reads from the NHIP promoter
 amplicon, plots CpG methylation, genotypes two promoter SNPs (rs4823981 and
 rs4823982), and tests case vs control differential methylation.
 
-![methyl_aligner pipeline](docs/images/pipeline_schematic.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/pipeline_schematic_dark.png">
+  <img alt="methyl_aligner pipeline" src="docs/images/pipeline_schematic.png">
+</picture>
 
 ## Installation ##
 
@@ -195,5 +198,5 @@ example/
 ├── test_sample.fq          example bisulfite long reads
 ├── matrices/               3 simulated case and 3 simulated control matrices
 └── run_examples.sh         runs every feature on the example data
-docs/images/                pipeline schematic and example figures
+docs/images/                pipeline schematic (light and dark) and example figures
 ```
